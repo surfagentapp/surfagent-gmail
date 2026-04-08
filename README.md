@@ -1,32 +1,35 @@
-# Gmail adapter for SurfAgent
+# surfagent-gmail
 
-Experimental SurfAgent MCP adapter for Gmail.
+Gmail adapter for [SurfAgent](https://surfagent.app).
 
-## Current scope
-- health check against the SurfAgent daemon
-- open Gmail in the managed browser
-- inspect Gmail page state
-- extract visible thread rows
-- open a visible thread row
-- inspect an opened message/conversation
-- open the compose dialog
-- inspect compose state
-- fill an open draft
-- send the current draft
-- open Sent Mail
+This adapter gives AI agents Gmail-native verbs so they do not have to improvise fragile selectors every time they open compose, inspect mailbox state, or verify a sent message.
+
+## What this adapter is for
+
+Use `surfagent-gmail` when you need reliable Gmail workflows like:
+- opening Gmail in the managed browser
+- checking mailbox or compose state
+- extracting visible thread rows
+- opening a visible thread
+- inspecting an opened message
+- composing a draft
+- sending a message
+- opening Sent Mail for proof
 
 ## Why this exists
-Gmail is not a generic form page.
+
+Gmail is not a normal form page.
 
 It has:
 - dynamic compose surfaces
-- React-like editor behavior
+- editor behavior that can lie to raw DOM pokes
 - multiple mailbox states
-- verification requirements where a click is not proof
+- send flows where a click is not proof
 
-This adapter gives Gmail-native verbs so agents stop guessing at raw selectors every run.
+So this adapter gives site-native tools instead of making agents rediscover Gmail every run.
 
-## Tool set
+## Current tool set
+
 - `gmail_health_check`
 - `gmail_open`
 - `gmail_get_state`
@@ -41,14 +44,15 @@ This adapter gives Gmail-native verbs so agents stop guessing at raw selectors e
 - `gmail_open_sent`
 
 ## Proof rule
-For send flows, success is not just "the button was clicked".
+
+For Gmail send flows, success is not just clicking Send.
 
 Minimum proof:
 1. compose fields contain the intended values
 2. send confirmation appears
 3. Sent Mail or the opened sent message reflects the result
 
-Practical verification flow with the current tool set:
+Practical verification flow:
 1. `gmail_open_compose`
 2. `gmail_fill_compose_draft`
 3. `gmail_get_composer_state`
@@ -58,13 +62,54 @@ Practical verification flow with the current tool set:
 7. `gmail_open_visible_thread_row`
 8. `gmail_get_open_message`
 
-## Notes and limits
-- body writing is plain text only for now
-- visible thread extraction is intentionally lightweight, it is for navigation and proof, not full mailbox sync
-- opened-message extraction returns the visible conversation text/preview, which is enough for proof but not a structured Gmail API replacement
+## How to use it
 
-## Next scope
-- reply and forward flows
-- richer sent-message parsing once field stability is proven
-- label navigation helpers
-- receipts and persistence once the surface is proven stable
+Run this adapter alongside the base SurfAgent MCP.
+
+Base MCP:
+```json
+{
+  "mcpServers": {
+    "surfagent": {
+      "command": "npx",
+      "args": ["-y", "surfagent-mcp"]
+    },
+    "surfagent-gmail": {
+      "command": "npx",
+      "args": ["-y", "surfagent-gmail"]
+    }
+  }
+}
+```
+
+If you are new to SurfAgent, start here first:
+- <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/start-here.md>
+- <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/mcp-server.md>
+- <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/skills-and-adapters.md>
+
+## When to use this vs skills vs raw MCP
+
+- use `surfagent-mcp` for generic browser control
+- use `surfagent-skills` for better execution rules and reusable workflows
+- use `surfagent-gmail` when you want Gmail-native verbs and proof-aware send flows
+
+## Notes and limits
+
+- body writing is plain text only for now
+- visible thread extraction is navigation-focused, not full mailbox sync
+- opened-message extraction is proof-oriented, not a Gmail API replacement
+
+## Related repos
+
+- [surfagent](https://github.com/surfagentapp/surfagent)
+- [surfagent-mcp](https://github.com/surfagentapp/surfagent/tree/main/surfagent-mcp)
+- [surfagent-docs](https://github.com/surfagentapp/surfagent-docs)
+- [surfagent-skills](https://github.com/surfagentapp/surfagent-skills)
+
+## Status
+
+Experimental, but materially useful.
+
+## License
+
+MIT
