@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { findSiteTabByPath, screenshot } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
 
-export type GmailTaskKind = "compose-and-send" | "reply-and-send" | "check-mailbox";
+export type GmailTaskKind = "compose-and-send" | "reply-and-send" | "check-mailbox" | "open-latest-thread";
 
 type TaskStepStatus = "started" | "completed" | "failed";
 
@@ -49,6 +49,11 @@ export type ReplyAndSendOptions = {
 export type CheckMailboxOptions = {
   mailbox: "inbox" | "spam" | "sent" | "drafts" | "outbox";
   limit?: number;
+};
+
+export type OpenLatestThreadOptions = {
+  mailbox?: "inbox" | "spam" | "sent" | "drafts" | "outbox";
+  threadIndex?: number;
 };
 
 const RUN_ROOT = process.env.SURFAGENT_RUN_DIR || join(tmpdir(), "surfagent-gmail-runs");
@@ -257,6 +262,62 @@ export async function runCheckMailboxTask(options: CheckMailboxOptions): Promise
   }
 }
 
+export async function runOpenLatestThreadTask(options: OpenLatestThreadOptions): Promise<GmailTaskRun> {
+  const mailbox = options.mailbox ?? "inbox";
+  const threadIndex = options.threadIndex ?? 0;
+  const run: GmailTaskRun = {
+    ok: true,
+    adapter: "gmail",
+    task: "open-latest-thread",
+    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-open-latest-thread`,
+    steps: [],
+    artifacts: [],
+  };
+
+  try {
+    const opened = await withStep(run, "open-mailbox", async () => {
+      const result = await openSite(resolveMailboxPath(mailbox));
+      await waitFor(async () => {
+        const checked = await verifyMailboxOpen(result.id, mailbox);
+        return checked.matched;
+      }, 15000, 500);
+      await captureRunScreenshot(run, result.id, `${mailbox}-thread-mailbox-open`);
+      return result;
+    });
+
+    const thread = await withStep(run, "open-thread", async () => {
+      const result = await openVisibleThreadRow(threadIndex, opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-thread-open`);
+      return result;
+    });
+
+    const message = await withStep(run, "extract-open-message", async () => {
+      await waitFor(async () => {
+        const openedMessage = await getOpenMessage(opened.id);
+        return Boolean(String(openedMessage.subject ?? "").trim() || String(openedMessage.bodyText ?? "").trim());
+      }, 15000, 500);
+      const result = await getOpenMessage(opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-thread-message`);
+      return result;
+    });
+
+    run.outcome = { opened, thread, message };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error),
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error;
+  }
+}
+
 export async function runComposeAndSendTask(options: ComposeAndSendOptions): Promise<GmailTaskRun> {
   const run: GmailTaskRun = {
     ok: true,
@@ -448,6 +509,7 @@ function usage(): string {
     "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]",
     "  surfagent-gmail task reply-and-send --body <body> [--thread-index <n>] [--no-send]",
     "  surfagent-gmail task check-mailbox --mailbox <inbox|spam|sent|drafts|outbox> [--limit <n>]",
+    "  surfagent-gmail task open-latest-thread [--mailbox <inbox|spam|sent|drafts|outbox>] [--thread-index <n>]",
   ].join("\n");
 }
 
@@ -505,6 +567,23 @@ export async function runTaskCli(argv: string[]): Promise<number> {
     const run = await runCheckMailboxTask({
       mailbox,
       ...(limit !== undefined ? { limit } : {}),
+    });
+    console.log(JSON.stringify(run, null, 2));
+    return 0;
+  }
+
+  if (task === "open-latest-thread") {
+    const mailboxRaw = parsed.flags.mailbox;
+    const mailbox = (mailboxRaw === undefined || mailboxRaw === true ? "inbox" : String(mailboxRaw).trim().toLowerCase()) as OpenLatestThreadOptions["mailbox"];
+    const rawIndex = parsed.flags["thread-index"];
+    const threadIndex = rawIndex === undefined || rawIndex === true ? undefined : Number(rawIndex);
+    if (!["inbox", "spam", "sent", "drafts", "outbox"].includes(mailbox ?? "inbox") || (threadIndex !== undefined && Number.isNaN(threadIndex))) {
+      console.error(usage());
+      return 1;
+    }
+    const run = await runOpenLatestThreadTask({
+      ...(mailbox ? { mailbox } : {}),
+      ...(threadIndex !== undefined ? { threadIndex } : {}),
     });
     console.log(JSON.stringify(run, null, 2));
     return 0;

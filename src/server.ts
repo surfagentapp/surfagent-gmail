@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
-import { runCheckMailboxTask, runComposeAndSendTask, runReplyAndSendTask } from "./task-runner.js";
+import { runCheckMailboxTask, runComposeAndSendTask, runOpenLatestThreadTask, runReplyAndSendTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -182,6 +182,25 @@ export const TOOL_SET: ToolDefinition[] = [
       const input = asObject(args, "gmail_check_mailbox_task arguments");
       const mailbox = String(input.mailbox ?? "").trim().toLowerCase() as "inbox" | "spam" | "sent" | "drafts" | "outbox";
       return textResult(JSON.stringify(await runCheckMailboxTask({ mailbox, ...(typeof input.limit === "number" ? { limit: input.limit } : {}) }), null, 2));
+    },
+  },
+  {
+    name: "gmail_open_latest_thread_task",
+    description: "Run a deterministic Gmail thread-open task that opens a mailbox, opens a visible thread row, and captures the resulting message with proof artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailbox: { type: "string", enum: ["inbox", "spam", "sent", "drafts", "outbox"], description: "Mailbox to open before selecting a thread. Defaults to inbox." },
+        threadIndex: { type: "number", description: "Zero-based visible thread row index. Defaults to 0." },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_open_latest_thread_task arguments");
+      return textResult(JSON.stringify(await runOpenLatestThreadTask({
+        ...(typeof input.mailbox === "string" ? { mailbox: String(input.mailbox).trim().toLowerCase() as "inbox" | "spam" | "sent" | "drafts" | "outbox" } : {}),
+        ...(typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}),
+      }), null, 2));
     },
   },
 ];

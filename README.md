@@ -2,7 +2,7 @@
 
 Gmail adapter for [SurfAgent](https://surfagent.app).
 
-This adapter gives AI agents Gmail-native verbs so they do not have to improvise fragile selectors every time they open compose, inspect mailbox state, or verify a sent message.
+This adapter gives AI agents Gmail-native verbs so they do not have to improvise fragile selectors every time they open compose, inspect mailbox state, verify a sent message, or manage Gmail tab hygiene.
 
 ## What this adapter is for
 
@@ -11,6 +11,7 @@ Use `surfagent-gmail` when you need reliable Gmail workflows like:
 - checking Inbox, Spam, Sent, Drafts, or outbox-style views
 - checking mailbox or compose state
 - extracting visible thread rows
+- opening the latest visible thread deterministically
 - opening a visible thread
 - inspecting an opened message
 - composing a draft
@@ -27,6 +28,7 @@ It has:
 - editor behavior that can lie to raw DOM pokes
 - multiple mailbox states
 - send flows where a click is not proof
+- a nasty habit of accumulating duplicate tabs if you do not enforce hygiene
 
 So this adapter gives site-native tools instead of making agents rediscover Gmail every run.
 
@@ -48,6 +50,7 @@ So this adapter gives site-native tools instead of making agents rediscover Gmai
 - `gmail_compose_and_send_task`
 - `gmail_reply_and_send_task`
 - `gmail_check_mailbox_task`
+- `gmail_open_latest_thread_task`
 
 ## Proof rule
 
@@ -72,6 +75,7 @@ Or use task runners directly:
 - `gmail_compose_and_send_task`
 - `gmail_reply_and_send_task`
 - `gmail_check_mailbox_task`
+- `gmail_open_latest_thread_task`
 
 ## How to use it
 
@@ -109,6 +113,7 @@ If you are new to SurfAgent, start here first:
 - body writing is plain text only for now
 - visible thread extraction is navigation-focused, not full mailbox sync
 - opened-message extraction is proof-oriented, not a Gmail API replacement
+- Gmail tab hygiene is now enforced by the adapter, so task flows should reuse one working Gmail tab instead of spraying duplicates
 
 ## Related repos
 

@@ -20888,6 +20888,14 @@ async function listTabs() {
   if (!data.ok) throw new Error(data.error ?? "Could not list tabs.");
   return data.tabs ?? [];
 }
+async function closeTab(tabId) {
+  const data = await daemonRequest(
+    "/browser/tab/close",
+    { method: "POST", body: JSON.stringify({ tabId }) },
+    1e4
+  );
+  if (!data.ok) throw new Error(data.error ?? `Could not close tab ${tabId}.`);
+}
 async function navigateTab(url2, tabId) {
   const data = await daemonRequest(
     "/browser/navigate",
@@ -20915,23 +20923,36 @@ async function screenshot(tabId) {
   if (!data.ok) throw new Error(data.error ?? "Screenshot failed.");
   return data.image ?? data.screenshot ?? "";
 }
-async function findSiteTab() {
+async function listSiteTabs() {
   const tabs = await listTabs();
-  return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
+  return tabs.filter((tab) => SITE_URL_RE.test(tab.url));
+}
+async function findSiteTab() {
+  const tabs = await listSiteTabs();
+  return tabs[0] ?? null;
 }
 async function findSiteTabByPath(pathFragment) {
-  const tabs = await listTabs();
+  const tabs = await listSiteTabs();
   const needle = pathFragment.toLowerCase();
-  return tabs.find((tab) => SITE_URL_RE.test(tab.url) && tab.url.toLowerCase().includes(needle)) ?? null;
+  return tabs.find((tab) => tab.url.toLowerCase().includes(needle)) ?? null;
+}
+async function cleanupSiteTabs(keepTabId) {
+  const tabs = await listSiteTabs();
+  const toClose = tabs.filter((tab) => tab.id !== keepTabId);
+  const closed = [];
+  for (const tab of toClose) {
+    await closeTab(tab.id).catch(() => void 0);
+    closed.push(tab.id);
+  }
+  return { kept: keepTabId, closed };
 }
 async function ensureSiteTab(path = "/mail/u/0/#inbox") {
   const targetUrl = /^https?:\/\//i.test(path) ? path : path.startsWith("/") ? `${BASE_ORIGIN}${path}` : `${BASE_URL.replace(/\/$/, "")}/${path.replace(/^\/+/, "")}`;
-  const existing = await findSiteTab();
-  if (existing) {
-    await navigateTab(targetUrl, existing.id);
-    return { ...existing, url: targetUrl };
-  }
-  return navigateTab(targetUrl);
+  const exact = await findSiteTabByPath(targetUrl.replace(BASE_ORIGIN, ""));
+  const candidate = exact ?? await findSiteTab();
+  const tab = candidate ? await navigateTab(targetUrl, candidate.id) : await navigateTab(targetUrl);
+  await cleanupSiteTabs(tab.id).catch(() => void 0);
+  return tab;
 }
 
 // src/site.ts
@@ -21391,6 +21412,57 @@ async function runCheckMailboxTask(options) {
     throw error2;
   }
 }
+async function runOpenLatestThreadTask(options) {
+  const mailbox = options.mailbox ?? "inbox";
+  const threadIndex = options.threadIndex ?? 0;
+  const run = {
+    ok: true,
+    adapter: "gmail",
+    task: "open-latest-thread",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-open-latest-thread`,
+    steps: [],
+    artifacts: []
+  };
+  try {
+    const opened = await withStep(run, "open-mailbox", async () => {
+      const result = await openSite(resolveMailboxPath(mailbox));
+      await waitFor(async () => {
+        const checked = await verifyMailboxOpen(result.id, mailbox);
+        return checked.matched;
+      }, 15e3, 500);
+      await captureRunScreenshot(run, result.id, `${mailbox}-thread-mailbox-open`);
+      return result;
+    });
+    const thread = await withStep(run, "open-thread", async () => {
+      const result = await openVisibleThreadRow(threadIndex, opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-thread-open`);
+      return result;
+    });
+    const message = await withStep(run, "extract-open-message", async () => {
+      await waitFor(async () => {
+        const openedMessage = await getOpenMessage(opened.id);
+        return Boolean(String(openedMessage.subject ?? "").trim() || String(openedMessage.bodyText ?? "").trim());
+      }, 15e3, 500);
+      const result = await getOpenMessage(opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-thread-message`);
+      return result;
+    });
+    run.outcome = { opened, thread, message };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error2),
+        message: error2 instanceof Error ? error2.message : String(error2),
+        retryable: true
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
 async function runComposeAndSendTask(options) {
   const run = {
     ok: true,
@@ -21563,7 +21635,8 @@ function usage() {
     "Usage:",
     "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]",
     "  surfagent-gmail task reply-and-send --body <body> [--thread-index <n>] [--no-send]",
-    "  surfagent-gmail task check-mailbox --mailbox <inbox|spam|sent|drafts|outbox> [--limit <n>]"
+    "  surfagent-gmail task check-mailbox --mailbox <inbox|spam|sent|drafts|outbox> [--limit <n>]",
+    "  surfagent-gmail task open-latest-thread [--mailbox <inbox|spam|sent|drafts|outbox>] [--thread-index <n>]"
   ].join("\n");
 }
 async function runTaskCli(argv) {
@@ -21617,6 +21690,22 @@ async function runTaskCli(argv) {
     const run = await runCheckMailboxTask({
       mailbox,
       ...limit !== void 0 ? { limit } : {}
+    });
+    console.log(JSON.stringify(run, null, 2));
+    return 0;
+  }
+  if (task === "open-latest-thread") {
+    const mailboxRaw = parsed.flags.mailbox;
+    const mailbox = mailboxRaw === void 0 || mailboxRaw === true ? "inbox" : String(mailboxRaw).trim().toLowerCase();
+    const rawIndex = parsed.flags["thread-index"];
+    const threadIndex = rawIndex === void 0 || rawIndex === true ? void 0 : Number(rawIndex);
+    if (!["inbox", "spam", "sent", "drafts", "outbox"].includes(mailbox ?? "inbox") || threadIndex !== void 0 && Number.isNaN(threadIndex)) {
+      console.error(usage());
+      return 1;
+    }
+    const run = await runOpenLatestThreadTask({
+      ...mailbox ? { mailbox } : {},
+      ...threadIndex !== void 0 ? { threadIndex } : {}
     });
     console.log(JSON.stringify(run, null, 2));
     return 0;
@@ -21827,6 +21916,25 @@ var TOOL_SET = [
       const input = asObject(args, "gmail_check_mailbox_task arguments");
       const mailbox = String(input.mailbox ?? "").trim().toLowerCase();
       return textResult(JSON.stringify(await runCheckMailboxTask({ mailbox, ...typeof input.limit === "number" ? { limit: input.limit } : {} }), null, 2));
+    }
+  },
+  {
+    name: "gmail_open_latest_thread_task",
+    description: "Run a deterministic Gmail thread-open task that opens a mailbox, opens a visible thread row, and captures the resulting message with proof artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailbox: { type: "string", enum: ["inbox", "spam", "sent", "drafts", "outbox"], description: "Mailbox to open before selecting a thread. Defaults to inbox." },
+        threadIndex: { type: "number", description: "Zero-based visible thread row index. Defaults to 0." }
+      },
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_open_latest_thread_task arguments");
+      return textResult(JSON.stringify(await runOpenLatestThreadTask({
+        ...typeof input.mailbox === "string" ? { mailbox: String(input.mailbox).trim().toLowerCase() } : {},
+        ...typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}
+      }), null, 2));
     }
   }
 ];

@@ -66,6 +66,15 @@ export async function listTabs(): Promise<TabInfo[]> {
   return data.tabs ?? [];
 }
 
+export async function closeTab(tabId: string): Promise<void> {
+  const data = await daemonRequest<{ ok: boolean; error?: string }>(
+    "/browser/tab/close",
+    { method: "POST", body: JSON.stringify({ tabId }) },
+    10_000,
+  );
+  if (!data.ok) throw new Error(data.error ?? `Could not close tab ${tabId}.`);
+}
+
 export async function navigateTab(url: string, tabId?: string): Promise<TabInfo> {
   const data = await daemonRequest<{ ok: boolean; tab?: TabInfo; error?: string }>(
     "/browser/navigate",
@@ -96,15 +105,31 @@ export async function screenshot(tabId?: string): Promise<string> {
   return data.image ?? data.screenshot ?? "";
 }
 
-export async function findSiteTab(): Promise<TabInfo | null> {
+export async function listSiteTabs(): Promise<TabInfo[]> {
   const tabs = await listTabs();
-  return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
+  return tabs.filter((tab) => SITE_URL_RE.test(tab.url));
+}
+
+export async function findSiteTab(): Promise<TabInfo | null> {
+  const tabs = await listSiteTabs();
+  return tabs[0] ?? null;
 }
 
 export async function findSiteTabByPath(pathFragment: string): Promise<TabInfo | null> {
-  const tabs = await listTabs();
+  const tabs = await listSiteTabs();
   const needle = pathFragment.toLowerCase();
-  return tabs.find((tab) => SITE_URL_RE.test(tab.url) && tab.url.toLowerCase().includes(needle)) ?? null;
+  return tabs.find((tab) => tab.url.toLowerCase().includes(needle)) ?? null;
+}
+
+export async function cleanupSiteTabs(keepTabId: string): Promise<{ kept: string; closed: string[] }> {
+  const tabs = await listSiteTabs();
+  const toClose = tabs.filter((tab) => tab.id !== keepTabId);
+  const closed: string[] = [];
+  for (const tab of toClose) {
+    await closeTab(tab.id).catch(() => undefined);
+    closed.push(tab.id);
+  }
+  return { kept: keepTabId, closed };
 }
 
 export async function ensureSiteTab(path = '/mail/u/0/#inbox'): Promise<TabInfo> {
@@ -113,10 +138,12 @@ export async function ensureSiteTab(path = '/mail/u/0/#inbox'): Promise<TabInfo>
     : path.startsWith("/")
       ? `${BASE_ORIGIN}${path}`
       : `${BASE_URL.replace(/\/$/, "")}/${path.replace(/^\/+/, "")}`;
-  const existing = await findSiteTab();
-  if (existing) {
-    await navigateTab(targetUrl, existing.id);
-    return { ...existing, url: targetUrl };
-  }
-  return navigateTab(targetUrl);
+
+  const exact = await findSiteTabByPath(targetUrl.replace(BASE_ORIGIN, ""));
+  const candidate = exact ?? await findSiteTab();
+  const tab = candidate
+    ? await navigateTab(targetUrl, candidate.id)
+    : await navigateTab(targetUrl);
+  await cleanupSiteTabs(tab.id).catch(() => undefined);
+  return tab;
 }
