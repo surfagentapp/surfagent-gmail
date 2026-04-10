@@ -11,8 +11,11 @@ const expected = [
   "gmail_fill_compose_draft",
   "gmail_send_compose",
   "gmail_open_sent",
+  "gmail_open_reply",
   "gmail_open_visible_thread_row",
   "gmail_get_open_message",
+  "gmail_compose_and_send_task",
+  "gmail_reply_and_send_task",
 ];
 
 function assert(condition: unknown, message: string): asserts condition {

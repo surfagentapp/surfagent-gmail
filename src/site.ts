@@ -193,6 +193,32 @@ export async function openVisibleThreadRow(index = 0, tabId?: string) {
   return parseJsonResult(raw);
 }
 
+export async function openReply(tabId?: string) {
+  const raw = await evaluate<string>(String.raw`(() => {
+    const buttons = [...document.querySelectorAll('div[role="button"], button')];
+    const replyButton = buttons.find((el) => {
+      const text = (el.textContent || '').trim();
+      const aria = el.getAttribute('aria-label') || '';
+      const title = el.getAttribute('title') || '';
+      const haystack = [text, aria, title].join(' ');
+      return /reply/i.test(haystack) && !/reply all/i.test(haystack);
+    });
+    if (!replyButton) {
+      return JSON.stringify({ ok: false, error: 'Reply button not found.' });
+    }
+    replyButton.click();
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
+    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
+    return JSON.stringify({
+      ok: true,
+      clicked: true,
+      composerPresent: !!bodyField,
+      sendButtonPresent: !!sendButton,
+    });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
+
 export async function getOpenMessage(tabId?: string) {
   const raw = await evaluate<string>(String.raw`(() => {
     const subject = document.querySelector('h2, h1')?.textContent?.trim() || null;

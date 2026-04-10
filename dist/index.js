@@ -21114,6 +21114,31 @@ async function openVisibleThreadRow(index = 0, tabId) {
   })();`, tabId);
   return parseJsonResult(raw);
 }
+async function openReply(tabId) {
+  const raw = await evaluate(String.raw`(() => {
+    const buttons = [...document.querySelectorAll('div[role="button"], button')];
+    const replyButton = buttons.find((el) => {
+      const text = (el.textContent || '').trim();
+      const aria = el.getAttribute('aria-label') || '';
+      const title = el.getAttribute('title') || '';
+      const haystack = [text, aria, title].join(' ');
+      return /reply/i.test(haystack) && !/reply all/i.test(haystack);
+    });
+    if (!replyButton) {
+      return JSON.stringify({ ok: false, error: 'Reply button not found.' });
+    }
+    replyButton.click();
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
+    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
+    return JSON.stringify({
+      ok: true,
+      clicked: true,
+      composerPresent: !!bodyField,
+      sendButtonPresent: !!sendButton,
+    });
+  })();`, tabId);
+  return parseJsonResult(raw);
+}
 async function getOpenMessage(tabId) {
   const raw = await evaluate(String.raw`(() => {
     const subject = document.querySelector('h2, h1')?.textContent?.trim() || null;
@@ -21253,7 +21278,7 @@ async function waitFor(condition, timeoutMs = 12e3, pollMs = 400) {
 async function waitForComposeDialog(tabId) {
   await waitFor(async () => {
     const state = await getComposerState(tabId);
-    return state.dialogOpen === true && state.fieldsPresent?.to === true && state.fieldsPresent?.body === true;
+    return state.fieldsPresent?.body === true && state.sendButtonPresent === true;
   }, 15e3, 500);
 }
 async function verifyDraft(tabId, options) {
@@ -21362,10 +21387,97 @@ function parseFlagMap(argv) {
   }
   return { _: positional, flags };
 }
+async function verifyReplyDraft(tabId, options) {
+  const state = await getComposerState(tabId);
+  const bodyText = String(state.values?.bodyText ?? "").trim();
+  const bodyNeedle = options.body.trim().slice(0, 80);
+  return {
+    ok: Boolean(state.fieldsPresent?.body && bodyText.includes(bodyNeedle) && state.sendButtonPresent),
+    state
+  };
+}
+async function verifyReplySent(tabId, options) {
+  const message = await getOpenMessage(tabId);
+  const bodyNeedle = options.body.trim().slice(0, 80);
+  return {
+    message,
+    matched: String(message.bodyText ?? "").includes(bodyNeedle)
+  };
+}
+async function runReplyAndSendTask(options) {
+  const run = {
+    ok: true,
+    adapter: "gmail",
+    task: "reply-and-send",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-reply-and-send`,
+    steps: [],
+    artifacts: []
+  };
+  try {
+    const opened = await withStep(run, "open-gmail", async () => openSite("/mail/u/0/#inbox"));
+    const thread = await withStep(run, "open-thread", async () => {
+      const result = await openVisibleThreadRow(options.threadIndex ?? 0, opened.id);
+      await captureRunScreenshot(run, opened.id, "thread-open");
+      return result;
+    });
+    await withStep(run, "open-reply", async () => {
+      const result = await openReply(opened.id);
+      await waitForComposeDialog(opened.id);
+      await captureRunScreenshot(run, opened.id, "reply-open");
+      return result;
+    });
+    const filled = await withStep(run, "fill-reply", async () => {
+      const result = await fillComposeDraft({ body: options.body }, opened.id);
+      await captureRunScreenshot(run, opened.id, "reply-filled");
+      return result;
+    });
+    const replyVerified = await withStep(run, "verify-reply-draft", async () => {
+      const result = await verifyReplyDraft(opened.id, options);
+      if (!result.ok) throw new Error(`Reply draft verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      return result;
+    });
+    let sendResult = { skipped: true };
+    let sentVerified = { skipped: true };
+    if (options.send !== false) {
+      sendResult = await withStep(run, "send-reply", async () => {
+        await captureRunScreenshot(run, opened.id, "before-reply-send");
+        const result = await sendCurrentCompose(opened.id);
+        await captureRunScreenshot(run, opened.id, "after-reply-send");
+        if (result.ok !== true) throw new Error(`Reply send failed. Diagnostics: ${JSON.stringify(result)}`);
+        return result;
+      });
+      sentVerified = await withStep(run, "verify-reply-sent", async () => {
+        await waitFor(async () => {
+          const verified = await verifyReplySent(opened.id, options);
+          return verified.matched;
+        }, 15e3, 500);
+        const result = await verifyReplySent(opened.id, options);
+        await captureRunScreenshot(run, opened.id, "reply-sent-verification");
+        if (!result.matched) throw new Error(`Reply sent verification failed. Diagnostics: ${JSON.stringify(result.message)}`);
+        return result;
+      });
+    }
+    run.outcome = { opened, thread, filled, replyVerified, sendResult, sentVerified };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error2),
+        message: error2 instanceof Error ? error2.message : String(error2),
+        retryable: true
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
 function usage() {
   return [
     "Usage:",
-    "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]"
+    "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]",
+    "  surfagent-gmail task reply-and-send --body <body> [--thread-index <n>] [--no-send]"
   ].join("\n");
 }
 async function runTaskCli(argv) {
@@ -21387,6 +21499,22 @@ async function runTaskCli(argv) {
       to,
       subject,
       body,
+      send: parsed.flags["no-send"] === true ? false : true
+    });
+    console.log(JSON.stringify(run, null, 2));
+    return 0;
+  }
+  if (task === "reply-and-send") {
+    const body = String(parsed.flags.body ?? "").trim();
+    const rawIndex = parsed.flags["thread-index"];
+    const threadIndex = rawIndex === void 0 || rawIndex === true ? void 0 : Number(rawIndex);
+    if (!body || threadIndex !== void 0 && Number.isNaN(threadIndex)) {
+      console.error(usage());
+      return 1;
+    }
+    const run = await runReplyAndSendTask({
+      body,
+      ...threadIndex !== void 0 ? { threadIndex } : {},
       send: parsed.flags["no-send"] === true ? false : true
     });
     console.log(JSON.stringify(run, null, 2));
@@ -21515,6 +21643,15 @@ var TOOL_SET = [
     }
   },
   {
+    name: "gmail_open_reply",
+    description: "Open the inline Gmail reply composer in the currently opened message thread.",
+    inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_open_reply arguments");
+      return textResult(JSON.stringify(await openReply(asOptionalString(input.tabId)), null, 2));
+    }
+  },
+  {
     name: "gmail_open_visible_thread_row",
     description: "Open a visible Gmail thread row by zero-based index from the current mailbox view.",
     inputSchema: { type: "object", properties: { index: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
@@ -21552,6 +21689,25 @@ var TOOL_SET = [
       const subject = String(input.subject ?? "").trim();
       const body = String(input.body ?? "").trim();
       return textResult(JSON.stringify(await runComposeAndSendTask({ to, subject, body, send: input.send === false ? false : true }), null, 2));
+    }
+  },
+  {
+    name: "gmail_reply_and_send_task",
+    description: "Run a deterministic Gmail reply task with thread-open, reply-open, screenshots, draft verification, and optional send verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        body: { type: "string" },
+        threadIndex: { type: "number", description: "Zero-based inbox row index to open before replying. Defaults to 0." },
+        send: { type: "boolean", description: "Actually send the reply. Defaults to true." }
+      },
+      required: ["body"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_reply_and_send_task arguments");
+      const body = String(input.body ?? "").trim();
+      return textResult(JSON.stringify(await runReplyAndSendTask({ body, ...typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}, send: input.send === false ? false : true }), null, 2));
     }
   }
 ];

@@ -13,6 +13,7 @@ Use `surfagent-gmail` when you need reliable Gmail workflows like:
 - opening a visible thread
 - inspecting an opened message
 - composing a draft
+- replying inside a thread
 - sending a message
 - opening Sent Mail for proof
 
@@ -38,10 +39,13 @@ So this adapter gives site-native tools instead of making agents rediscover Gmai
 - `gmail_open_visible_thread_row`
 - `gmail_get_open_message`
 - `gmail_open_compose`
+- `gmail_open_reply`
 - `gmail_get_composer_state`
 - `gmail_fill_compose_draft`
 - `gmail_send_compose`
 - `gmail_open_sent`
+- `gmail_compose_and_send_task`
+- `gmail_reply_and_send_task`
 
 ## Proof rule
 
@@ -53,14 +57,18 @@ Minimum proof:
 3. Sent Mail or the opened sent message reflects the result
 
 Practical verification flow:
-1. `gmail_open_compose`
+1. `gmail_open_compose` or `gmail_open_reply`
 2. `gmail_fill_compose_draft`
 3. `gmail_get_composer_state`
 4. `gmail_send_compose`
-5. `gmail_open_sent`
+5. `gmail_open_sent` or `gmail_get_open_message`
 6. `gmail_extract_visible_threads`
 7. `gmail_open_visible_thread_row`
 8. `gmail_get_open_message`
+
+Or use task runners directly:
+- `gmail_compose_and_send_task`
+- `gmail_reply_and_send_task`
 
 ## How to use it
 
@@ -91,7 +99,7 @@ If you are new to SurfAgent, start here first:
 
 - use `surfagent-mcp` for generic browser control
 - use `surfagent-skills` for better execution rules and reusable workflows
-- use `surfagent-gmail` when you want Gmail-native verbs and proof-aware send flows
+- use `surfagent-gmail` when you want Gmail-native verbs and proof-aware send or reply flows
 
 ## Notes and limits
 

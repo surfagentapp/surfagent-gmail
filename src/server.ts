@@ -1,8 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
-import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
-import { runComposeAndSendTask } from "./task-runner.js";
+import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
+import { runComposeAndSendTask, runReplyAndSendTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -99,6 +99,15 @@ export const TOOL_SET: ToolDefinition[] = [
     },
   },
   {
+    name: "gmail_open_reply",
+    description: "Open the inline Gmail reply composer in the currently opened message thread.",
+    inputSchema: { type: "object", properties: { tabId: { type: "string" } }, additionalProperties: false },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_open_reply arguments");
+      return textResult(JSON.stringify(await openReply(asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
     name: "gmail_open_visible_thread_row",
     description: "Open a visible Gmail thread row by zero-based index from the current mailbox view.",
     inputSchema: { type: "object", properties: { index: { type: "number" }, tabId: { type: "string" } }, additionalProperties: false },
@@ -136,6 +145,25 @@ export const TOOL_SET: ToolDefinition[] = [
       const subject = String(input.subject ?? "").trim();
       const body = String(input.body ?? "").trim();
       return textResult(JSON.stringify(await runComposeAndSendTask({ to, subject, body, send: input.send === false ? false : true }), null, 2));
+    },
+  },
+  {
+    name: "gmail_reply_and_send_task",
+    description: "Run a deterministic Gmail reply task with thread-open, reply-open, screenshots, draft verification, and optional send verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        body: { type: "string" },
+        threadIndex: { type: "number", description: "Zero-based inbox row index to open before replying. Defaults to 0." },
+        send: { type: "boolean", description: "Actually send the reply. Defaults to true." },
+      },
+      required: ["body"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_reply_and_send_task arguments");
+      const body = String(input.body ?? "").trim();
+      return textResult(JSON.stringify(await runReplyAndSendTask({ body, ...(typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}), send: input.send === false ? false : true }), null, 2));
     },
   },
 ];
