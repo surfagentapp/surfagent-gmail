@@ -20905,6 +20905,15 @@ async function evaluate(expression, tabId) {
   if (!data.ok) throw new Error(data.error ?? "Evaluate failed.");
   return data.result;
 }
+async function screenshot(tabId) {
+  const data = await daemonRequest(
+    "/browser/screenshot",
+    { method: "POST", body: JSON.stringify(tabId ? { tabId } : {}) },
+    2e4
+  );
+  if (!data.ok) throw new Error(data.error ?? "Screenshot failed.");
+  return data.image ?? data.screenshot ?? "";
+}
 async function findSiteTab() {
   const tabs = await listTabs();
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
@@ -20933,9 +20942,9 @@ async function getSiteState(tabId) {
     const visibleSubject = document.querySelector('h2, h1')?.textContent?.trim() || null;
     const composeButton = document.querySelector('div[role="button"][gh="cm"]');
     const composeDialog = document.querySelector('div[role="dialog"]');
-    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]') as HTMLInputElement | null;
-    const subjectField = document.querySelector('input[name="subjectbox"]') as HTMLInputElement | null;
-    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]') as HTMLElement | null;
+    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]');
+    const subjectField = document.querySelector('input[name="subjectbox"]');
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
     const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
 
     return JSON.stringify({
@@ -20951,8 +20960,8 @@ async function getSiteState(tabId) {
       composeDialogOpen: !!composeDialog,
       sendButtonPresent: !!sendButton,
       composer: {
-        to: toField?.value || null,
-        subject: subjectField?.value || null,
+        to: toField && 'value' in toField ? toField.value : null,
+        subject: subjectField && 'value' in subjectField ? subjectField.value : null,
         bodyText: bodyField?.innerText?.trim() || null,
       },
     });
@@ -20961,7 +20970,7 @@ async function getSiteState(tabId) {
 }
 async function openCompose(tabId) {
   const raw = await evaluate(String.raw`(() => {
-    const button = document.querySelector('div[role="button"][gh="cm"]') as HTMLElement | null;
+    const button = document.querySelector('div[role="button"][gh="cm"]');
     if (!button) {
       return JSON.stringify({ ok: false, error: 'Compose button not found.' });
     }
@@ -20974,10 +20983,10 @@ async function openCompose(tabId) {
 async function getComposerState(tabId) {
   const raw = await evaluate(String.raw`(() => {
     const dialog = document.querySelector('div[role="dialog"]');
-    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]') as HTMLInputElement | null;
-    const subjectField = document.querySelector('input[name="subjectbox"]') as HTMLInputElement | null;
-    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]') as HTMLElement | null;
-    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]') as HTMLElement | null;
+    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]');
+    const subjectField = document.querySelector('input[name="subjectbox"]');
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
+    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
     return JSON.stringify({
       ok: true,
       dialogOpen: !!dialog,
@@ -20987,8 +20996,8 @@ async function getComposerState(tabId) {
         body: !!bodyField,
       },
       values: {
-        to: toField?.value || null,
-        subject: subjectField?.value || null,
+        to: toField && 'value' in toField ? toField.value : null,
+        subject: subjectField && 'value' in subjectField ? subjectField.value : null,
         bodyText: bodyField?.innerText?.trim() || null,
       },
       sendButtonPresent: !!sendButton,
@@ -21003,11 +21012,11 @@ async function fillComposeDraft(input, tabId) {
     const input = ${payload};
     const result = { ok: true, wrote: { to: false, subject: false, body: false } };
 
-    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]') as HTMLInputElement | null;
-    const subjectField = document.querySelector('input[name="subjectbox"]') as HTMLInputElement | null;
-    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]') as HTMLElement | null;
+    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]');
+    const subjectField = document.querySelector('input[name="subjectbox"]');
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
 
-    const setInputValue = (el: HTMLInputElement, value: string) => {
+    const setInputValue = (el, value) => {
       el.focus();
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
       if (setter) setter.call(el, value);
@@ -21035,8 +21044,8 @@ async function fillComposeDraft(input, tabId) {
     return JSON.stringify({
       ...result,
       values: {
-        to: toField?.value || null,
-        subject: subjectField?.value || null,
+        to: toField && 'value' in toField ? toField.value : null,
+        subject: subjectField && 'value' in subjectField ? subjectField.value : null,
         bodyText: bodyField?.innerText?.trim() || null,
       }
     });
@@ -21045,7 +21054,7 @@ async function fillComposeDraft(input, tabId) {
 }
 async function sendCurrentCompose(tabId) {
   const raw = await evaluate(String.raw`(() => {
-    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]') as HTMLElement | null;
+    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
     if (!sendButton) {
       return JSON.stringify({ ok: false, error: 'Send button not found.' });
     }
@@ -21069,7 +21078,7 @@ async function sendCurrentCompose(tabId) {
 async function openSent(tabId) {
   const raw = await evaluate(String.raw`(() => {
     const sentLink = Array.from(document.querySelectorAll('[role="navigation"] a, [role="navigation"] [role="link"]'))
-      .find((el) => /sent/i.test((el.textContent || '').trim())) as HTMLElement | undefined;
+      .find((el) => /sent/i.test((el.textContent || '').trim()));
     if (!sentLink) {
       return JSON.stringify({ ok: false, error: 'Sent link not found.' });
     }
@@ -21090,7 +21099,7 @@ async function openVisibleThreadRow(index = 0, tabId) {
       return JSON.stringify({ ok: false, error: 'Visible thread row not found.', availableRows: rows.length });
     }
 
-    const clickable = target.row.querySelector('span[role="link"], div[role="link"], a, td') as HTMLElement | null;
+    const clickable = target.row.querySelector('span[role="link"], div[role="link"], a, td');
     const clickTarget = clickable ?? target.row;
     clickTarget.click();
 
@@ -21108,10 +21117,10 @@ async function openVisibleThreadRow(index = 0, tabId) {
 async function getOpenMessage(tabId) {
   const raw = await evaluate(String.raw`(() => {
     const subject = document.querySelector('h2, h1')?.textContent?.trim() || null;
-    const conversation = document.querySelector('[role="main"]') as HTMLElement | null;
+    const conversation = document.querySelector('[role="main"]');
     const messageEls = [...document.querySelectorAll('[role="listitem"], .adn, .gs')]
       .filter((el) => (el.textContent || '').trim());
-    const latestMessage = (messageEls[messageEls.length - 1] as HTMLElement | undefined) ?? null;
+    const latestMessage = messageEls[messageEls.length - 1] ?? null;
     const participants = [...document.querySelectorAll('span[email], [data-hovercard-id], .gD')]
       .map((el) => (el.textContent || '').trim())
       .filter(Boolean)
@@ -21159,6 +21168,232 @@ function parseJsonResult(raw) {
     }
   }
   return raw;
+}
+
+// src/task-runner.ts
+var import_promises = require("node:fs/promises");
+var import_node_os2 = require("node:os");
+var import_node_path2 = require("node:path");
+var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "surfagent-gmail-runs");
+function isoNow() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function slug(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
+}
+function cleanBase64Image(input) {
+  const value = input.trim();
+  const comma = value.indexOf(",");
+  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
+}
+async function ensureRunDir(runId) {
+  const dir = (0, import_node_path2.join)(RUN_ROOT, runId);
+  await (0, import_promises.mkdir)(dir, { recursive: true });
+  return dir;
+}
+async function writeRunFile(runId, filename, content, encoding) {
+  const dir = await ensureRunDir(runId);
+  const fullPath = (0, import_node_path2.join)(dir, filename);
+  if (typeof content === "string") await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
+  else await (0, import_promises.writeFile)(fullPath, content);
+  return fullPath;
+}
+async function overwriteRunManifest(run) {
+  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+}
+async function captureRunScreenshot(run, tabId, label) {
+  const image = await screenshot(tabId);
+  const payload = cleanBase64Image(image);
+  const path = await writeRunFile(run.runId, `${String(run.artifacts.length + 1).padStart(2, "0")}-${slug(label)}.png`, Buffer.from(payload, "base64"));
+  const artifact = { label, path, takenAt: isoNow() };
+  run.artifacts.push(artifact);
+  await overwriteRunManifest(run);
+  return artifact;
+}
+async function withStep(run, name, fn) {
+  const step = { name, status: "started", startedAt: isoNow() };
+  run.steps.push(step);
+  await overwriteRunManifest(run);
+  try {
+    const result = await fn();
+    step.status = "completed";
+    step.finishedAt = isoNow();
+    step.details = result;
+    await overwriteRunManifest(run);
+    return result;
+  } catch (error2) {
+    step.status = "failed";
+    step.finishedAt = isoNow();
+    step.details = error2 instanceof Error ? error2.message : String(error2);
+    run.ok = false;
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+function inferErrorCode(error2) {
+  const text = error2 instanceof Error ? error2.message : String(error2);
+  if (/compose/i.test(text)) return "compose_open_failed";
+  if (/send/i.test(text)) return "send_failed";
+  if (/visible/i.test(text) || /verify/i.test(text)) return "verification_failed";
+  return "task_failed";
+}
+async function waitFor(condition, timeoutMs = 12e3, pollMs = 400) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for condition.`);
+}
+async function waitForComposeDialog(tabId) {
+  await waitFor(async () => {
+    const state = await getComposerState(tabId);
+    return state.dialogOpen === true && state.fieldsPresent?.to === true && state.fieldsPresent?.body === true;
+  }, 15e3, 500);
+}
+async function verifyDraft(tabId, options) {
+  const state = await getComposerState(tabId);
+  const bodyText = String(state.values?.bodyText ?? "").trim();
+  const subject = String(state.values?.subject ?? "").trim();
+  const to = String(state.values?.to ?? "").trim();
+  const bodyNeedle = options.body.trim().slice(0, 80);
+  return {
+    ok: Boolean(state.dialogOpen && to.includes(options.to) && subject === options.subject && bodyText.includes(bodyNeedle)),
+    state
+  };
+}
+async function verifySent(tabId, options) {
+  await openSent(tabId);
+  await waitFor(async () => {
+    const state = await getSiteState(tabId);
+    return /sent/i.test(String(state.selectedMailbox ?? "")) || /#sent/i.test(String(state.path ?? ""));
+  }, 15e3, 500);
+  const visible = await extractVisible(10, tabId);
+  const subjectNeedle = options.subject.trim();
+  const items = Array.isArray(visible.items) ? visible.items ?? [] : [];
+  return {
+    visible,
+    matched: items.some((item) => String(item.text ?? "").includes(subjectNeedle))
+  };
+}
+async function runComposeAndSendTask(options) {
+  const run = {
+    ok: true,
+    adapter: "gmail",
+    task: "compose-and-send",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.subject)}-compose-and-send`,
+    steps: [],
+    artifacts: []
+  };
+  try {
+    const opened = await withStep(run, "open-gmail", async () => openSite("/mail/u/0/#inbox"));
+    await withStep(run, "open-compose", async () => {
+      const result = await openCompose(opened.id);
+      await waitForComposeDialog(opened.id);
+      await captureRunScreenshot(run, opened.id, "compose-open");
+      return result;
+    });
+    const filled = await withStep(run, "fill-draft", async () => {
+      const result = await fillComposeDraft({ to: options.to, subject: options.subject, body: options.body }, opened.id);
+      await captureRunScreenshot(run, opened.id, "draft-filled");
+      return result;
+    });
+    const draftVerified = await withStep(run, "verify-draft", async () => {
+      const result = await verifyDraft(opened.id, options);
+      if (!result.ok) throw new Error(`Draft verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      return result;
+    });
+    let sendResult = { skipped: true };
+    let sentVerified = { skipped: true };
+    if (options.send !== false) {
+      sendResult = await withStep(run, "send", async () => {
+        await captureRunScreenshot(run, opened.id, "before-send");
+        const result = await sendCurrentCompose(opened.id);
+        await captureRunScreenshot(run, opened.id, "after-send");
+        if (result.ok !== true) throw new Error(`Send failed. Diagnostics: ${JSON.stringify(result)}`);
+        return result;
+      });
+      sentVerified = await withStep(run, "verify-sent", async () => {
+        const result = await verifySent(opened.id, options);
+        await captureRunScreenshot(run, opened.id, "sent-verification");
+        if (!result.matched) throw new Error(`Sent verification failed. Diagnostics: ${JSON.stringify(result.visible)}`);
+        return result;
+      });
+    }
+    run.outcome = { opened, filled, draftVerified, sendResult, sentVerified };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error2),
+        message: error2 instanceof Error ? error2.message : String(error2),
+        retryable: true
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+function parseFlagMap(argv) {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (!token) continue;
+    if (!token.startsWith("--")) {
+      positional.push(token);
+      continue;
+    }
+    const key = token.slice(2);
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      flags[key] = true;
+      continue;
+    }
+    flags[key] = next;
+    i += 1;
+  }
+  return { _: positional, flags };
+}
+function usage() {
+  return [
+    "Usage:",
+    "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]"
+  ].join("\n");
+}
+async function runTaskCli(argv) {
+  const parsed = parseFlagMap(argv);
+  const [task] = parsed._;
+  if (!task || task === "help" || parsed.flags.help === true) {
+    console.log(usage());
+    return 0;
+  }
+  if (task === "compose-and-send") {
+    const to = String(parsed.flags.to ?? "").trim();
+    const subject = String(parsed.flags.subject ?? "").trim();
+    const body = String(parsed.flags.body ?? "").trim();
+    if (!to || !subject || !body) {
+      console.error(usage());
+      return 1;
+    }
+    const run = await runComposeAndSendTask({
+      to,
+      subject,
+      body,
+      send: parsed.flags["no-send"] === true ? false : true
+    });
+    console.log(JSON.stringify(run, null, 2));
+    return 0;
+  }
+  console.error(usage());
+  return 1;
 }
 
 // src/types.ts
@@ -21296,6 +21531,28 @@ var TOOL_SET = [
       const input = asObject(args, "gmail_get_open_message arguments");
       return textResult(JSON.stringify(await getOpenMessage(asOptionalString(input.tabId)), null, 2));
     }
+  },
+  {
+    name: "gmail_compose_and_send_task",
+    description: "Run a deterministic Gmail compose-and-send task with screenshots, draft verification, and optional sent-mail verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string" },
+        subject: { type: "string" },
+        body: { type: "string" },
+        send: { type: "boolean", description: "Actually send the email. Defaults to true." }
+      },
+      required: ["to", "subject", "body"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_compose_and_send_task arguments");
+      const to = String(input.to ?? "").trim();
+      const subject = String(input.subject ?? "").trim();
+      const body = String(input.body ?? "").trim();
+      return textResult(JSON.stringify(await runComposeAndSendTask({ to, subject, body, send: input.send === false ? false : true }), null, 2));
+    }
   }
 ];
 function createServer() {
@@ -21322,6 +21579,11 @@ function createServer() {
 
 // src/index.ts
 async function main() {
+  const [, , command, ...rest] = process.argv;
+  if (command === "task") {
+    const code = await runTaskCli(rest);
+    process.exit(code);
+  }
   const transport = new StdioServerTransport();
   const server = createServer();
   await server.connect(transport);

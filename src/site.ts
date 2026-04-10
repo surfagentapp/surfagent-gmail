@@ -14,9 +14,9 @@ export async function getSiteState(tabId?: string) {
     const visibleSubject = document.querySelector('h2, h1')?.textContent?.trim() || null;
     const composeButton = document.querySelector('div[role="button"][gh="cm"]');
     const composeDialog = document.querySelector('div[role="dialog"]');
-    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]') as HTMLInputElement | null;
-    const subjectField = document.querySelector('input[name="subjectbox"]') as HTMLInputElement | null;
-    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]') as HTMLElement | null;
+    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]');
+    const subjectField = document.querySelector('input[name="subjectbox"]');
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
     const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
 
     return JSON.stringify({
@@ -32,8 +32,8 @@ export async function getSiteState(tabId?: string) {
       composeDialogOpen: !!composeDialog,
       sendButtonPresent: !!sendButton,
       composer: {
-        to: toField?.value || null,
-        subject: subjectField?.value || null,
+        to: toField && 'value' in toField ? toField.value : null,
+        subject: subjectField && 'value' in subjectField ? subjectField.value : null,
         bodyText: bodyField?.innerText?.trim() || null,
       },
     });
@@ -43,7 +43,7 @@ export async function getSiteState(tabId?: string) {
 
 export async function openCompose(tabId?: string) {
   const raw = await evaluate<string>(String.raw`(() => {
-    const button = document.querySelector('div[role="button"][gh="cm"]') as HTMLElement | null;
+    const button = document.querySelector('div[role="button"][gh="cm"]');
     if (!button) {
       return JSON.stringify({ ok: false, error: 'Compose button not found.' });
     }
@@ -57,10 +57,10 @@ export async function openCompose(tabId?: string) {
 export async function getComposerState(tabId?: string) {
   const raw = await evaluate<string>(String.raw`(() => {
     const dialog = document.querySelector('div[role="dialog"]');
-    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]') as HTMLInputElement | null;
-    const subjectField = document.querySelector('input[name="subjectbox"]') as HTMLInputElement | null;
-    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]') as HTMLElement | null;
-    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]') as HTMLElement | null;
+    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]');
+    const subjectField = document.querySelector('input[name="subjectbox"]');
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
+    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
     return JSON.stringify({
       ok: true,
       dialogOpen: !!dialog,
@@ -70,8 +70,8 @@ export async function getComposerState(tabId?: string) {
         body: !!bodyField,
       },
       values: {
-        to: toField?.value || null,
-        subject: subjectField?.value || null,
+        to: toField && 'value' in toField ? toField.value : null,
+        subject: subjectField && 'value' in subjectField ? subjectField.value : null,
         bodyText: bodyField?.innerText?.trim() || null,
       },
       sendButtonPresent: !!sendButton,
@@ -87,11 +87,11 @@ export async function fillComposeDraft(input: { to?: string; subject?: string; b
     const input = ${payload};
     const result = { ok: true, wrote: { to: false, subject: false, body: false } };
 
-    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]') as HTMLInputElement | null;
-    const subjectField = document.querySelector('input[name="subjectbox"]') as HTMLInputElement | null;
-    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]') as HTMLElement | null;
+    const toField = document.querySelector('input[aria-label*="To recipients"], input[aria-label="Recipients"]');
+    const subjectField = document.querySelector('input[name="subjectbox"]');
+    const bodyField = document.querySelector('div[aria-label="Message Body"], div[g_editable="true"][role="textbox"]');
 
-    const setInputValue = (el: HTMLInputElement, value: string) => {
+    const setInputValue = (el, value) => {
       el.focus();
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
       if (setter) setter.call(el, value);
@@ -119,8 +119,8 @@ export async function fillComposeDraft(input: { to?: string; subject?: string; b
     return JSON.stringify({
       ...result,
       values: {
-        to: toField?.value || null,
-        subject: subjectField?.value || null,
+        to: toField && 'value' in toField ? toField.value : null,
+        subject: subjectField && 'value' in subjectField ? subjectField.value : null,
         bodyText: bodyField?.innerText?.trim() || null,
       }
     });
@@ -130,7 +130,7 @@ export async function fillComposeDraft(input: { to?: string; subject?: string; b
 
 export async function sendCurrentCompose(tabId?: string) {
   const raw = await evaluate<string>(String.raw`(() => {
-    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]') as HTMLElement | null;
+    const sendButton = document.querySelector('div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]');
     if (!sendButton) {
       return JSON.stringify({ ok: false, error: 'Send button not found.' });
     }
@@ -155,7 +155,7 @@ export async function sendCurrentCompose(tabId?: string) {
 export async function openSent(tabId?: string) {
   const raw = await evaluate<string>(String.raw`(() => {
     const sentLink = Array.from(document.querySelectorAll('[role="navigation"] a, [role="navigation"] [role="link"]'))
-      .find((el) => /sent/i.test((el.textContent || '').trim())) as HTMLElement | undefined;
+      .find((el) => /sent/i.test((el.textContent || '').trim()));
     if (!sentLink) {
       return JSON.stringify({ ok: false, error: 'Sent link not found.' });
     }
@@ -177,7 +177,7 @@ export async function openVisibleThreadRow(index = 0, tabId?: string) {
       return JSON.stringify({ ok: false, error: 'Visible thread row not found.', availableRows: rows.length });
     }
 
-    const clickable = target.row.querySelector('span[role="link"], div[role="link"], a, td') as HTMLElement | null;
+    const clickable = target.row.querySelector('span[role="link"], div[role="link"], a, td');
     const clickTarget = clickable ?? target.row;
     clickTarget.click();
 
@@ -196,10 +196,10 @@ export async function openVisibleThreadRow(index = 0, tabId?: string) {
 export async function getOpenMessage(tabId?: string) {
   const raw = await evaluate<string>(String.raw`(() => {
     const subject = document.querySelector('h2, h1')?.textContent?.trim() || null;
-    const conversation = document.querySelector('[role="main"]') as HTMLElement | null;
+    const conversation = document.querySelector('[role="main"]');
     const messageEls = [...document.querySelectorAll('[role="listitem"], .adn, .gs')]
       .filter((el) => (el.textContent || '').trim());
-    const latestMessage = (messageEls[messageEls.length - 1] as HTMLElement | undefined) ?? null;
+    const latestMessage = messageEls[messageEls.length - 1] ?? null;
     const participants = [...document.querySelectorAll('span[email], [data-hovercard-id], .gD')]
       .map((el) => (el.textContent || '').trim())
       .filter(Boolean)

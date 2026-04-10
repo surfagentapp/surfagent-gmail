@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
+import { runComposeAndSendTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -113,6 +114,28 @@ export const TOOL_SET: ToolDefinition[] = [
     handler: async (args) => {
       const input = asObject(args, "gmail_get_open_message arguments");
       return textResult(JSON.stringify(await getOpenMessage(asOptionalString(input.tabId)), null, 2));
+    },
+  },
+  {
+    name: "gmail_compose_and_send_task",
+    description: "Run a deterministic Gmail compose-and-send task with screenshots, draft verification, and optional sent-mail verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string" },
+        subject: { type: "string" },
+        body: { type: "string" },
+        send: { type: "boolean", description: "Actually send the email. Defaults to true." },
+      },
+      required: ["to", "subject", "body"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_compose_and_send_task arguments");
+      const to = String(input.to ?? "").trim();
+      const subject = String(input.subject ?? "").trim();
+      const body = String(input.body ?? "").trim();
+      return textResult(JSON.stringify(await runComposeAndSendTask({ to, subject, body, send: input.send === false ? false : true }), null, 2));
     },
   },
 ];
