@@ -18,6 +18,7 @@ const expected = [
   "gmail_reply_and_send_task",
   "gmail_check_mailbox_task",
   "gmail_open_latest_thread_task",
+  "gmail_triage_mailbox_task",
 ];
 
 function assert(condition: unknown, message: string): asserts condition {

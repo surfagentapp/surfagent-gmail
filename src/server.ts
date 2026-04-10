@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
-import { runCheckMailboxTask, runComposeAndSendTask, runOpenLatestThreadTask, runReplyAndSendTask } from "./task-runner.js";
+import { runCheckMailboxTask, runComposeAndSendTask, runOpenLatestThreadTask, runReplyAndSendTask, runTriageMailboxTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -200,6 +200,27 @@ export const TOOL_SET: ToolDefinition[] = [
       return textResult(JSON.stringify(await runOpenLatestThreadTask({
         ...(typeof input.mailbox === "string" ? { mailbox: String(input.mailbox).trim().toLowerCase() as "inbox" | "spam" | "sent" | "drafts" | "outbox" } : {}),
         ...(typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}),
+      }), null, 2));
+    },
+  },
+  {
+    name: "gmail_triage_mailbox_task",
+    description: "Run a deterministic Gmail mailbox triage task that scores visible threads, summarizes urgency, and can optionally open the best candidate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailbox: { type: "string", enum: ["inbox", "spam", "sent", "drafts", "outbox"], description: "Mailbox to triage. Defaults to inbox." },
+        limit: { type: "number", description: "Visible thread rows to score. Defaults to 10." },
+        openBestCandidate: { type: "boolean", description: "Open the highest-scoring visible thread and capture proof artifacts." }
+      },
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_triage_mailbox_task arguments");
+      return textResult(JSON.stringify(await runTriageMailboxTask({
+        ...(typeof input.mailbox === "string" ? { mailbox: String(input.mailbox).trim().toLowerCase() as "inbox" | "spam" | "sent" | "drafts" | "outbox" } : {}),
+        ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
+        ...(typeof input.openBestCandidate === "boolean" ? { openBestCandidate: input.openBestCandidate } : {}),
       }), null, 2));
     },
   },

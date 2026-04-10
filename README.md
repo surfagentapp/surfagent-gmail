@@ -12,6 +12,7 @@ Use `surfagent-gmail` when you need reliable Gmail workflows like:
 - checking mailbox or compose state
 - extracting visible thread rows
 - opening the latest visible thread deterministically
+- triaging visible mailbox threads by urgency and action signals
 - opening a visible thread
 - inspecting an opened message
 - composing a draft
@@ -51,6 +52,7 @@ So this adapter gives site-native tools instead of making agents rediscover Gmai
 - `gmail_reply_and_send_task`
 - `gmail_check_mailbox_task`
 - `gmail_open_latest_thread_task`
+- `gmail_triage_mailbox_task`
 
 ## Proof rule
 
@@ -76,6 +78,7 @@ Or use task runners directly:
 - `gmail_reply_and_send_task`
 - `gmail_check_mailbox_task`
 - `gmail_open_latest_thread_task`
+- `gmail_triage_mailbox_task`
 
 ## How to use it
 
@@ -114,6 +117,7 @@ If you are new to SurfAgent, start here first:
 - visible thread extraction is navigation-focused, not full mailbox sync
 - opened-message extraction is proof-oriented, not a Gmail API replacement
 - Gmail tab hygiene is now enforced by the adapter, so task flows should reuse one working Gmail tab instead of spraying duplicates
+- mailbox triage is heuristic and proof-oriented, not a substitute for a full Gmail classification engine
 
 ## Related repos
 

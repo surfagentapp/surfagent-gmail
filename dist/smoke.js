@@ -21271,6 +21271,47 @@ async function verifyMailboxOpen(tabId, mailbox) {
   const matched = path.includes(`#${normalized}`) || selected.includes(normalized);
   return { state, matched };
 }
+function classifyThreadText(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  const reasons = [];
+  const add = (points, reason) => {
+    score += points;
+    reasons.push(reason);
+  };
+  if (/(urgent|asap|immediately|today|deadline|overdue|action required)/i.test(lower)) add(5, "urgency language");
+  if (/(security|login|verify|verification|password|recovery|alert|suspicious|new device)/i.test(lower)) add(5, "security/account signal");
+  if (/(invoice|payment|failed|receipt|billing|charge|subscription|renewal)/i.test(lower)) add(4, "money/billing signal");
+  if (/(reply|respond|review|approve|confirm|confirm your|please read|required)/i.test(lower)) add(3, "explicit action cue");
+  if (/(github|x|google|discord|telegram|tradingview|xai)/i.test(lower)) add(1, "important service/vendor mention");
+  if (/(newsletter|digest|promo|promotion|sale|deals|marketing)/i.test(lower)) add(-3, "likely promotional");
+  const bucket = score >= 7 ? "urgent" : score >= 4 ? "needs_attention" : score >= 1 ? "review" : "low_signal";
+  return { score, bucket, reasons };
+}
+function buildTriage(items) {
+  const triaged = items.map((item, idx) => {
+    const text = String(item.text ?? "").trim();
+    const classification = classifyThreadText(text);
+    return {
+      index: typeof item.index === "number" ? item.index : idx,
+      text,
+      preview: text.slice(0, 240),
+      ...classification
+    };
+  });
+  const ordered = [...triaged].sort((a, b) => b.score - a.score || a.index - b.index);
+  return {
+    ordered,
+    summary: {
+      total: triaged.length,
+      urgent: triaged.filter((item) => item.bucket === "urgent").length,
+      needsAttention: triaged.filter((item) => item.bucket === "needs_attention").length,
+      review: triaged.filter((item) => item.bucket === "review").length,
+      lowSignal: triaged.filter((item) => item.bucket === "low_signal").length,
+      bestCandidate: ordered[0] ?? null
+    }
+  };
+}
 async function runCheckMailboxTask(options) {
   const mailbox = options.mailbox;
   const run = {
@@ -21304,6 +21345,69 @@ async function runCheckMailboxTask(options) {
       return result;
     });
     run.outcome = { opened, mailboxVerified, visibleThreads };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error2),
+        message: error2 instanceof Error ? error2.message : String(error2),
+        retryable: true
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+async function runTriageMailboxTask(options) {
+  const mailbox = options.mailbox ?? "inbox";
+  const limit = options.limit ?? 10;
+  const run = {
+    ok: true,
+    adapter: "gmail",
+    task: "triage-mailbox",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-triage-mailbox`,
+    steps: [],
+    artifacts: []
+  };
+  try {
+    const opened = await withStep(run, "open-mailbox", async () => {
+      const result = await openSite(resolveMailboxPath(mailbox));
+      let mailboxTabId = result.id;
+      await waitFor(async () => {
+        mailboxTabId = await settleMailboxTab(result.id, mailbox) ?? result.id;
+        const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
+        return checked.matched;
+      }, 15e3, 500);
+      await captureRunScreenshot(run, mailboxTabId, `${mailbox}-triage-mailbox-open`);
+      return { ...result, id: mailboxTabId };
+    });
+    const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
+      const result = await verifyMailboxOpen(opened.id, mailbox);
+      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      return result;
+    });
+    const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      const result = await extractVisible(limit, opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-triage-visible-threads`);
+      return result;
+    });
+    const triage = await withStep(run, "triage-visible-threads", async () => {
+      const items = Array.isArray(visibleThreads.items) ? visibleThreads.items ?? [] : [];
+      return buildTriage(items);
+    });
+    let bestCandidate = { skipped: true };
+    if (options.openBestCandidate === true && triage.summary.bestCandidate && typeof triage.summary.bestCandidate.index === "number") {
+      bestCandidate = await withStep(run, "open-best-candidate", async () => {
+        const thread = await openVisibleThreadRow(triage.summary.bestCandidate.index, opened.id);
+        await captureRunScreenshot(run, opened.id, `${mailbox}-triage-best-candidate-open`);
+        const message = await getOpenMessage(opened.id);
+        await captureRunScreenshot(run, opened.id, `${mailbox}-triage-best-candidate-message`);
+        return { thread, message };
+      });
+    }
+    run.outcome = { opened, mailboxVerified, visibleThreads, triage, bestCandidate };
     await overwriteRunManifest(run);
     return run;
   } catch (error2) {
@@ -21739,6 +21843,27 @@ var TOOL_SET = [
         ...typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}
       }), null, 2));
     }
+  },
+  {
+    name: "gmail_triage_mailbox_task",
+    description: "Run a deterministic Gmail mailbox triage task that scores visible threads, summarizes urgency, and can optionally open the best candidate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailbox: { type: "string", enum: ["inbox", "spam", "sent", "drafts", "outbox"], description: "Mailbox to triage. Defaults to inbox." },
+        limit: { type: "number", description: "Visible thread rows to score. Defaults to 10." },
+        openBestCandidate: { type: "boolean", description: "Open the highest-scoring visible thread and capture proof artifacts." }
+      },
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_triage_mailbox_task arguments");
+      return textResult(JSON.stringify(await runTriageMailboxTask({
+        ...typeof input.mailbox === "string" ? { mailbox: String(input.mailbox).trim().toLowerCase() } : {},
+        ...typeof input.limit === "number" ? { limit: input.limit } : {},
+        ...typeof input.openBestCandidate === "boolean" ? { openBestCandidate: input.openBestCandidate } : {}
+      }), null, 2));
+    }
   }
 ];
 function createServer() {
@@ -21781,7 +21906,8 @@ var expected = [
   "gmail_compose_and_send_task",
   "gmail_reply_and_send_task",
   "gmail_check_mailbox_task",
-  "gmail_open_latest_thread_task"
+  "gmail_open_latest_thread_task",
+  "gmail_triage_mailbox_task"
 ];
 function assert2(condition, message) {
   if (!condition) throw new Error(message);
