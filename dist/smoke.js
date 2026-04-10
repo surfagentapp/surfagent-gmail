@@ -20872,7 +20872,11 @@ async function getSiteState(tabId) {
     const path = location.pathname + location.hash;
     const title = document.title || null;
     const mainPresent = !!document.querySelector('main, [role="main"]');
-    const selectedMailbox = document.querySelector('[role="navigation"] [aria-current="page"]')?.textContent?.trim() || null;
+    const visibleRows = document.querySelectorAll('tr[role="row"].zA, tr.zA[role="row"]').length;
+    const selectedNav = document.querySelector('[role="navigation"] [aria-current="page"]')?.textContent?.trim() || null;
+    const selectedMailbox = selectedNav
+      || (/#[a-z]+/i.test(path) ? path.split('#').pop()?.trim() || null : null)
+      || (/^(Inbox|Spam|Sent|Drafts)\b/i.test(title || '') ? (title || '').match(/^(Inbox|Spam|Sent|Drafts)\b/i)?.[1] || null : null);
     const visibleSubject = document.querySelector('h2, h1')?.textContent?.trim() || null;
     const composeButton = document.querySelector('div[role="button"][gh="cm"]');
     const composeDialog = document.querySelector('div[role="dialog"]');
@@ -20890,6 +20894,7 @@ async function getSiteState(tabId) {
       mainPresent,
       selectedMailbox,
       visibleSubject,
+      visibleRows,
       composeFound: !!composeButton,
       composeDialogOpen: !!composeDialog,
       sendButtonPresent: !!sendButton,
@@ -21103,19 +21108,26 @@ async function extractVisible(limit = 10, tabId) {
   const payload = JSON.stringify({ limit });
   const raw = await evaluate(String.raw`(() => {
     const input = ${payload};
+    const rowNodes = [...document.querySelectorAll('tr[role="row"].zA, tr.zA[role="row"], tr.zA')];
+    const rows = rowNodes
+      .map((el, index) => ({
+        index,
+        text: (el.innerText || el.textContent || '').trim(),
+        unread: el.classList.contains('zE'),
+        classes: el.className || '',
+      }))
+      .filter((item) => item.text && !/^tab$/i.test(item.text) && item.text.length > 8)
+      .slice(0, input.limit)
+      .map(({ classes, ...item }) => item);
     const diagnostics = {
       url: location.href,
       path: location.pathname + location.hash,
       title: document.title || null,
       mainPresent: !!document.querySelector('main, [role="main"]'),
+      selectedMailbox: document.querySelector('[role="navigation"] [aria-current="page"]')?.textContent?.trim() || null,
+      rowCandidates: rowNodes.length,
+      bodyPreview: document.body.innerText.slice(0, 500),
     };
-    const rows = [...document.querySelectorAll('tr[role="row"]')]
-      .map((el, index) => ({
-        index,
-        text: (el.innerText || el.textContent || '').trim(),
-      }))
-      .filter((item) => item.text)
-      .slice(0, input.limit);
     return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics });
   })();`, tabId);
   return parseJsonResult(raw);
@@ -21269,7 +21281,18 @@ async function verifyMailboxOpen(tabId, mailbox) {
   const selected = String(state.selectedMailbox ?? "").toLowerCase();
   const normalized = mailbox === "outbox" ? "sent" : mailbox;
   const matched = path.includes(`#${normalized}`) || selected.includes(normalized);
-  return { state, matched };
+  const hydrated = Boolean(state.mainPresent) && (Number(state.visibleRows ?? 0) > 0 || Boolean(state.composeFound) || /gmail/i.test(String(state.title ?? "")));
+  return { state, matched, hydrated };
+}
+async function waitForMailboxReady(tabId, mailbox, requireRows = false) {
+  await waitFor(async () => {
+    const checked = await verifyMailboxOpen(tabId, mailbox);
+    if (!checked.matched || !checked.hydrated) return false;
+    if (!requireRows) return true;
+    const visible = await extractVisible(5, tabId);
+    return Number(visible.count ?? 0) > 0;
+  }, 15e3, 500);
+  return verifyMailboxOpen(tabId, mailbox);
 }
 function classifyThreadText(text) {
   const lower = text.toLowerCase();
@@ -21329,17 +21352,18 @@ async function runCheckMailboxTask(options) {
       await waitFor(async () => {
         mailboxTabId = await settleMailboxTab(result.id, mailbox) ?? result.id;
         const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
-        return checked.matched;
+        return checked.matched && checked.hydrated;
       }, 15e3, 500);
       await captureRunScreenshot(run, mailboxTabId, `${mailbox}-mailbox-open`);
       return { ...result, id: mailboxTabId };
     });
     const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
       const result = await verifyMailboxOpen(opened.id, mailbox);
-      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      if (!result.matched || !result.hydrated) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
       return result;
     });
     const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      await waitForMailboxReady(opened.id, mailbox, mailbox === "inbox");
       const result = await extractVisible(options.limit ?? 10, opened.id);
       await captureRunScreenshot(run, opened.id, `${mailbox}-visible-threads`);
       return result;
@@ -21378,17 +21402,18 @@ async function runTriageMailboxTask(options) {
       await waitFor(async () => {
         mailboxTabId = await settleMailboxTab(result.id, mailbox) ?? result.id;
         const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
-        return checked.matched;
+        return checked.matched && checked.hydrated;
       }, 15e3, 500);
       await captureRunScreenshot(run, mailboxTabId, `${mailbox}-triage-mailbox-open`);
       return { ...result, id: mailboxTabId };
     });
     const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
       const result = await verifyMailboxOpen(opened.id, mailbox);
-      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      if (!result.matched || !result.hydrated) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
       return result;
     });
     const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      await waitForMailboxReady(opened.id, mailbox, mailbox === "inbox");
       const result = await extractVisible(limit, opened.id);
       await captureRunScreenshot(run, opened.id, `${mailbox}-triage-visible-threads`);
       return result;
@@ -21439,8 +21464,9 @@ async function runOpenLatestThreadTask(options) {
       const result = await openSite(resolveMailboxPath(mailbox));
       await waitFor(async () => {
         const checked = await verifyMailboxOpen(result.id, mailbox);
-        return checked.matched;
+        return checked.matched && checked.hydrated;
       }, 15e3, 500);
+      await waitForMailboxReady(result.id, mailbox, mailbox === "inbox");
       await captureRunScreenshot(run, result.id, `${mailbox}-thread-mailbox-open`);
       return result;
     });

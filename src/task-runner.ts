@@ -212,7 +212,19 @@ async function verifyMailboxOpen(tabId: string | undefined, mailbox: CheckMailbo
   const selected = String(state.selectedMailbox ?? "").toLowerCase();
   const normalized = mailbox === "outbox" ? "sent" : mailbox;
   const matched = path.includes(`#${normalized}`) || selected.includes(normalized);
-  return { state, matched };
+  const hydrated = Boolean(state.mainPresent) && (Number(state.visibleRows ?? 0) > 0 || Boolean(state.composeFound) || /gmail/i.test(String(state.title ?? "")));
+  return { state, matched, hydrated };
+}
+
+async function waitForMailboxReady(tabId: string | undefined, mailbox: CheckMailboxOptions["mailbox"], requireRows = false) {
+  await waitFor(async () => {
+    const checked = await verifyMailboxOpen(tabId, mailbox);
+    if (!checked.matched || !checked.hydrated) return false;
+    if (!requireRows) return true;
+    const visible = await extractVisible(5, tabId);
+    return Number((visible as { count?: number }).count ?? 0) > 0;
+  }, 15000, 500);
+  return verifyMailboxOpen(tabId, mailbox);
 }
 
 function classifyThreadText(text: string) {
@@ -280,7 +292,7 @@ export async function runCheckMailboxTask(options: CheckMailboxOptions): Promise
       await waitFor(async () => {
         mailboxTabId = (await settleMailboxTab(result.id, mailbox)) ?? result.id;
         const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
-        return checked.matched;
+        return checked.matched && checked.hydrated;
       }, 15000, 500);
       await captureRunScreenshot(run, mailboxTabId, `${mailbox}-mailbox-open`);
       return { ...result, id: mailboxTabId };
@@ -288,11 +300,12 @@ export async function runCheckMailboxTask(options: CheckMailboxOptions): Promise
 
     const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
       const result = await verifyMailboxOpen(opened.id, mailbox);
-      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      if (!result.matched || !result.hydrated) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
       return result;
     });
 
     const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      await waitForMailboxReady(opened.id, mailbox, mailbox === "inbox");
       const result = await extractVisible(options.limit ?? 10, opened.id);
       await captureRunScreenshot(run, opened.id, `${mailbox}-visible-threads`);
       return result;
@@ -334,7 +347,7 @@ export async function runTriageMailboxTask(options: TriageMailboxOptions): Promi
       await waitFor(async () => {
         mailboxTabId = (await settleMailboxTab(result.id, mailbox)) ?? result.id;
         const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
-        return checked.matched;
+        return checked.matched && checked.hydrated;
       }, 15000, 500);
       await captureRunScreenshot(run, mailboxTabId, `${mailbox}-triage-mailbox-open`);
       return { ...result, id: mailboxTabId };
@@ -342,11 +355,12 @@ export async function runTriageMailboxTask(options: TriageMailboxOptions): Promi
 
     const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
       const result = await verifyMailboxOpen(opened.id, mailbox);
-      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      if (!result.matched || !result.hydrated) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
       return result;
     });
 
     const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      await waitForMailboxReady(opened.id, mailbox, mailbox === "inbox");
       const result = await extractVisible(limit, opened.id);
       await captureRunScreenshot(run, opened.id, `${mailbox}-triage-visible-threads`);
       return result;
@@ -404,8 +418,9 @@ export async function runOpenLatestThreadTask(options: OpenLatestThreadOptions):
       const result = await openSite(resolveMailboxPath(mailbox));
       await waitFor(async () => {
         const checked = await verifyMailboxOpen(result.id, mailbox);
-        return checked.matched;
+        return checked.matched && checked.hydrated;
       }, 15000, 500);
+      await waitForMailboxReady(result.id, mailbox, mailbox === "inbox");
       await captureRunScreenshot(run, result.id, `${mailbox}-thread-mailbox-open`);
       return result;
     });

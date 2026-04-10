@@ -10,7 +10,11 @@ export async function getSiteState(tabId?: string) {
     const path = location.pathname + location.hash;
     const title = document.title || null;
     const mainPresent = !!document.querySelector('main, [role="main"]');
-    const selectedMailbox = document.querySelector('[role="navigation"] [aria-current="page"]')?.textContent?.trim() || null;
+    const visibleRows = document.querySelectorAll('tr[role="row"].zA, tr.zA[role="row"]').length;
+    const selectedNav = document.querySelector('[role="navigation"] [aria-current="page"]')?.textContent?.trim() || null;
+    const selectedMailbox = selectedNav
+      || (/#[a-z]+/i.test(path) ? path.split('#').pop()?.trim() || null : null)
+      || (/^(Inbox|Spam|Sent|Drafts)\b/i.test(title || '') ? (title || '').match(/^(Inbox|Spam|Sent|Drafts)\b/i)?.[1] || null : null);
     const visibleSubject = document.querySelector('h2, h1')?.textContent?.trim() || null;
     const composeButton = document.querySelector('div[role="button"][gh="cm"]');
     const composeDialog = document.querySelector('div[role="dialog"]');
@@ -28,6 +32,7 @@ export async function getSiteState(tabId?: string) {
       mainPresent,
       selectedMailbox,
       visibleSubject,
+      visibleRows,
       composeFound: !!composeButton,
       composeDialogOpen: !!composeDialog,
       sendButtonPresent: !!sendButton,
@@ -250,19 +255,26 @@ export async function extractVisible(limit = 10, tabId?: string) {
   const payload = JSON.stringify({ limit });
   const raw = await evaluate<string>(String.raw`(() => {
     const input = ${payload};
+    const rowNodes = [...document.querySelectorAll('tr[role="row"].zA, tr.zA[role="row"], tr.zA')];
+    const rows = rowNodes
+      .map((el, index) => ({
+        index,
+        text: (el.innerText || el.textContent || '').trim(),
+        unread: el.classList.contains('zE'),
+        classes: el.className || '',
+      }))
+      .filter((item) => item.text && !/^tab$/i.test(item.text) && item.text.length > 8)
+      .slice(0, input.limit)
+      .map(({ classes, ...item }) => item);
     const diagnostics = {
       url: location.href,
       path: location.pathname + location.hash,
       title: document.title || null,
       mainPresent: !!document.querySelector('main, [role="main"]'),
+      selectedMailbox: document.querySelector('[role="navigation"] [aria-current="page"]')?.textContent?.trim() || null,
+      rowCandidates: rowNodes.length,
+      bodyPreview: document.body.innerText.slice(0, 500),
     };
-    const rows = [...document.querySelectorAll('tr[role="row"]')]
-      .map((el, index) => ({
-        index,
-        text: (el.innerText || el.textContent || '').trim(),
-      }))
-      .filter((item) => item.text)
-      .slice(0, input.limit);
     return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics });
   })();`, tabId);
   return parseJsonResult(raw);
