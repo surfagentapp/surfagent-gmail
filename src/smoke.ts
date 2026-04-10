@@ -16,6 +16,7 @@ const expected = [
   "gmail_get_open_message",
   "gmail_compose_and_send_task",
   "gmail_reply_and_send_task",
+  "gmail_check_mailbox_task",
 ];
 
 function assert(condition: unknown, message: string): asserts condition {

@@ -20841,6 +20841,7 @@ var import_node_os = require("node:os");
 var DAEMON_URL = process.env.SURFAGENT_DAEMON_URL ?? "http://127.0.0.1:7201";
 var TOKEN_PATH = (0, import_node_path.join)((0, import_node_os.homedir)(), ".surfagent", "daemon-token.txt");
 var SITE_URL_RE = new RegExp(String.raw`https?://mail\.google\.com/`, "i");
+var BASE_ORIGIN = "https://mail.google.com";
 var BASE_URL = "https://mail.google.com/mail/u/0/#inbox";
 var cachedToken;
 async function readDaemonError(path, res) {
@@ -20918,8 +20919,13 @@ async function findSiteTab() {
   const tabs = await listTabs();
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
 }
+async function findSiteTabByPath(pathFragment) {
+  const tabs = await listTabs();
+  const needle = pathFragment.toLowerCase();
+  return tabs.find((tab) => SITE_URL_RE.test(tab.url) && tab.url.toLowerCase().includes(needle)) ?? null;
+}
 async function ensureSiteTab(path = "/mail/u/0/#inbox") {
-  const targetUrl = /^https?:\/\//i.test(path) ? path : `${BASE_URL.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  const targetUrl = /^https?:\/\//i.test(path) ? path : path.startsWith("/") ? `${BASE_ORIGIN}${path}` : `${BASE_URL.replace(/\/$/, "")}/${path.replace(/^\/+/, "")}`;
   const existing = await findSiteTab();
   if (existing) {
     await navigateTab(targetUrl, existing.id);
@@ -21166,7 +21172,9 @@ async function getOpenMessage(tabId) {
   return parseJsonResult(raw);
 }
 async function extractVisible(limit = 10, tabId) {
+  const payload = JSON.stringify({ limit });
   const raw = await evaluate(String.raw`(() => {
+    const input = ${payload};
     const diagnostics = {
       url: location.href,
       path: location.pathname + location.hash,
@@ -21179,7 +21187,7 @@ async function extractVisible(limit = 10, tabId) {
         text: (el.innerText || el.textContent || '').trim(),
       }))
       .filter((item) => item.text)
-      .slice(0, limit);
+      .slice(0, input.limit);
     return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics });
   })();`, tabId);
   return parseJsonResult(raw);
@@ -21264,6 +21272,7 @@ function inferErrorCode(error2) {
   const text = error2 instanceof Error ? error2.message : String(error2);
   if (/compose/i.test(text)) return "compose_open_failed";
   if (/send/i.test(text)) return "send_failed";
+  if (/mailbox|inbox|spam|sent|drafts/i.test(text)) return "mailbox_check_failed";
   if (/visible/i.test(text) || /verify/i.test(text)) return "verification_failed";
   return "task_failed";
 }
@@ -21305,6 +21314,82 @@ async function verifySent(tabId, options) {
     visible,
     matched: items.some((item) => String(item.text ?? "").includes(subjectNeedle))
   };
+}
+function resolveMailboxPath(mailbox) {
+  switch (mailbox) {
+    case "inbox":
+      return "/mail/u/0/#inbox";
+    case "spam":
+      return "/mail/u/0/#spam";
+    case "sent":
+    case "outbox":
+      return "/mail/u/0/#sent";
+    case "drafts":
+      return "/mail/u/0/#drafts";
+    default:
+      return "/mail/u/0/#inbox";
+  }
+}
+async function settleMailboxTab(preferredTabId, mailbox) {
+  const path = resolveMailboxPath(mailbox).toLowerCase();
+  const matched = await findSiteTabByPath(path.replace("https://mail.google.com", ""));
+  return matched?.id ?? preferredTabId;
+}
+async function verifyMailboxOpen(tabId, mailbox) {
+  const state = await getSiteState(tabId);
+  const path = String(state.path ?? "").toLowerCase();
+  const selected = String(state.selectedMailbox ?? "").toLowerCase();
+  const normalized = mailbox === "outbox" ? "sent" : mailbox;
+  const matched = path.includes(`#${normalized}`) || selected.includes(normalized);
+  return { state, matched };
+}
+async function runCheckMailboxTask(options) {
+  const mailbox = options.mailbox;
+  const run = {
+    ok: true,
+    adapter: "gmail",
+    task: "check-mailbox",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-check-mailbox`,
+    steps: [],
+    artifacts: []
+  };
+  try {
+    const opened = await withStep(run, "open-mailbox", async () => {
+      const result = await openSite(resolveMailboxPath(mailbox));
+      let mailboxTabId = result.id;
+      await waitFor(async () => {
+        mailboxTabId = await settleMailboxTab(result.id, mailbox) ?? result.id;
+        const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
+        return checked.matched;
+      }, 15e3, 500);
+      await captureRunScreenshot(run, mailboxTabId, `${mailbox}-mailbox-open`);
+      return { ...result, id: mailboxTabId };
+    });
+    const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
+      const result = await verifyMailboxOpen(opened.id, mailbox);
+      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      return result;
+    });
+    const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      const result = await extractVisible(options.limit ?? 10, opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-visible-threads`);
+      return result;
+    });
+    run.outcome = { opened, mailboxVerified, visibleThreads };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error2),
+        message: error2 instanceof Error ? error2.message : String(error2),
+        retryable: true
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error2;
+  }
 }
 async function runComposeAndSendTask(options) {
   const run = {
@@ -21477,7 +21562,8 @@ function usage() {
   return [
     "Usage:",
     "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]",
-    "  surfagent-gmail task reply-and-send --body <body> [--thread-index <n>] [--no-send]"
+    "  surfagent-gmail task reply-and-send --body <body> [--thread-index <n>] [--no-send]",
+    "  surfagent-gmail task check-mailbox --mailbox <inbox|spam|sent|drafts|outbox> [--limit <n>]"
   ].join("\n");
 }
 async function runTaskCli(argv) {
@@ -21516,6 +21602,21 @@ async function runTaskCli(argv) {
       body,
       ...threadIndex !== void 0 ? { threadIndex } : {},
       send: parsed.flags["no-send"] === true ? false : true
+    });
+    console.log(JSON.stringify(run, null, 2));
+    return 0;
+  }
+  if (task === "check-mailbox") {
+    const mailbox = String(parsed.flags.mailbox ?? "").trim().toLowerCase();
+    const rawLimit = parsed.flags.limit;
+    const limit = rawLimit === void 0 || rawLimit === true ? void 0 : Number(rawLimit);
+    if (!mailbox || !["inbox", "spam", "sent", "drafts", "outbox"].includes(mailbox) || limit !== void 0 && Number.isNaN(limit)) {
+      console.error(usage());
+      return 1;
+    }
+    const run = await runCheckMailboxTask({
+      mailbox,
+      ...limit !== void 0 ? { limit } : {}
     });
     console.log(JSON.stringify(run, null, 2));
     return 0;
@@ -21708,6 +21809,24 @@ var TOOL_SET = [
       const input = asObject(args, "gmail_reply_and_send_task arguments");
       const body = String(input.body ?? "").trim();
       return textResult(JSON.stringify(await runReplyAndSendTask({ body, ...typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}, send: input.send === false ? false : true }), null, 2));
+    }
+  },
+  {
+    name: "gmail_check_mailbox_task",
+    description: "Run a deterministic Gmail mailbox check for inbox, spam, sent, drafts, or outbox-style sent view with screenshots and visible-thread extraction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailbox: { type: "string", enum: ["inbox", "spam", "sent", "drafts", "outbox"] },
+        limit: { type: "number", description: "Visible thread rows to extract. Defaults to 10." }
+      },
+      required: ["mailbox"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_check_mailbox_task arguments");
+      const mailbox = String(input.mailbox ?? "").trim().toLowerCase();
+      return textResult(JSON.stringify(await runCheckMailboxTask({ mailbox, ...typeof input.limit === "number" ? { limit: input.limit } : {} }), null, 2));
     }
   }
 ];

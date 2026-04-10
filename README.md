@@ -8,6 +8,7 @@ This adapter gives AI agents Gmail-native verbs so they do not have to improvise
 
 Use `surfagent-gmail` when you need reliable Gmail workflows like:
 - opening Gmail in the managed browser
+- checking Inbox, Spam, Sent, Drafts, or outbox-style views
 - checking mailbox or compose state
 - extracting visible thread rows
 - opening a visible thread
@@ -46,6 +47,7 @@ So this adapter gives site-native tools instead of making agents rediscover Gmai
 - `gmail_open_sent`
 - `gmail_compose_and_send_task`
 - `gmail_reply_and_send_task`
+- `gmail_check_mailbox_task`
 
 ## Proof rule
 
@@ -69,6 +71,7 @@ Practical verification flow:
 Or use task runners directly:
 - `gmail_compose_and_send_task`
 - `gmail_reply_and_send_task`
+- `gmail_check_mailbox_task`
 
 ## How to use it
 
@@ -99,7 +102,7 @@ If you are new to SurfAgent, start here first:
 
 - use `surfagent-mcp` for generic browser control
 - use `surfagent-skills` for better execution rules and reusable workflows
-- use `surfagent-gmail` when you want Gmail-native verbs and proof-aware send or reply flows
+- use `surfagent-gmail` when you want Gmail-native verbs and proof-aware mailbox, send, or reply flows
 
 ## Notes and limits
 

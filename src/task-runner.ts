@@ -1,10 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { screenshot } from "./connection.js";
+import { findSiteTabByPath, screenshot } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
 
-export type GmailTaskKind = "compose-and-send" | "reply-and-send";
+export type GmailTaskKind = "compose-and-send" | "reply-and-send" | "check-mailbox";
 
 type TaskStepStatus = "started" | "completed" | "failed";
 
@@ -44,6 +44,11 @@ export type ReplyAndSendOptions = {
   body: string;
   threadIndex?: number;
   send?: boolean;
+};
+
+export type CheckMailboxOptions = {
+  mailbox: "inbox" | "spam" | "sent" | "drafts" | "outbox";
+  limit?: number;
 };
 
 const RUN_ROOT = process.env.SURFAGENT_RUN_DIR || join(tmpdir(), "surfagent-gmail-runs");
@@ -120,6 +125,7 @@ function inferErrorCode(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   if (/compose/i.test(text)) return "compose_open_failed";
   if (/send/i.test(text)) return "send_failed";
+  if (/mailbox|inbox|spam|sent|drafts/i.test(text)) return "mailbox_check_failed";
   if (/visible/i.test(text) || /verify/i.test(text)) return "verification_failed";
   return "task_failed";
 }
@@ -165,6 +171,90 @@ async function verifySent(tabId: string | undefined, options: ComposeAndSendOpti
     visible,
     matched: items.some((item) => String(item.text ?? "").includes(subjectNeedle)),
   };
+}
+
+function resolveMailboxPath(mailbox: CheckMailboxOptions["mailbox"]): string {
+  switch (mailbox) {
+    case "inbox":
+      return "/mail/u/0/#inbox";
+    case "spam":
+      return "/mail/u/0/#spam";
+    case "sent":
+    case "outbox":
+      return "/mail/u/0/#sent";
+    case "drafts":
+      return "/mail/u/0/#drafts";
+    default:
+      return "/mail/u/0/#inbox";
+  }
+}
+
+async function settleMailboxTab(preferredTabId: string | undefined, mailbox: CheckMailboxOptions["mailbox"]) {
+  const path = resolveMailboxPath(mailbox).toLowerCase();
+  const matched = await findSiteTabByPath(path.replace("https://mail.google.com", ""));
+  return matched?.id ?? preferredTabId;
+}
+
+async function verifyMailboxOpen(tabId: string | undefined, mailbox: CheckMailboxOptions["mailbox"]) {
+  const state = await getSiteState(tabId);
+  const path = String(state.path ?? "").toLowerCase();
+  const selected = String(state.selectedMailbox ?? "").toLowerCase();
+  const normalized = mailbox === "outbox" ? "sent" : mailbox;
+  const matched = path.includes(`#${normalized}`) || selected.includes(normalized);
+  return { state, matched };
+}
+
+export async function runCheckMailboxTask(options: CheckMailboxOptions): Promise<GmailTaskRun> {
+  const mailbox = options.mailbox;
+  const run: GmailTaskRun = {
+    ok: true,
+    adapter: "gmail",
+    task: "check-mailbox",
+    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-check-mailbox`,
+    steps: [],
+    artifacts: [],
+  };
+
+  try {
+    const opened = await withStep(run, "open-mailbox", async () => {
+      const result = await openSite(resolveMailboxPath(mailbox));
+      let mailboxTabId: string | undefined = result.id;
+      await waitFor(async () => {
+        mailboxTabId = (await settleMailboxTab(result.id, mailbox)) ?? result.id;
+        const checked = await verifyMailboxOpen(mailboxTabId, mailbox);
+        return checked.matched;
+      }, 15000, 500);
+      await captureRunScreenshot(run, mailboxTabId, `${mailbox}-mailbox-open`);
+      return { ...result, id: mailboxTabId };
+    });
+
+    const mailboxVerified = await withStep(run, "verify-mailbox", async () => {
+      const result = await verifyMailboxOpen(opened.id, mailbox);
+      if (!result.matched) throw new Error(`Mailbox verification failed. Diagnostics: ${JSON.stringify(result.state)}`);
+      return result;
+    });
+
+    const visibleThreads = await withStep(run, "extract-visible-threads", async () => {
+      const result = await extractVisible(options.limit ?? 10, opened.id);
+      await captureRunScreenshot(run, opened.id, `${mailbox}-visible-threads`);
+      return result;
+    });
+
+    run.outcome = { opened, mailboxVerified, visibleThreads };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error) {
+    run.ok = false;
+    if (!run.error) {
+      run.error = {
+        code: inferErrorCode(error),
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+      };
+    }
+    await overwriteRunManifest(run);
+    throw error;
+  }
 }
 
 export async function runComposeAndSendTask(options: ComposeAndSendOptions): Promise<GmailTaskRun> {
@@ -357,6 +447,7 @@ function usage(): string {
     "Usage:",
     "  surfagent-gmail task compose-and-send --to <email> --subject <subject> --body <body> [--no-send]",
     "  surfagent-gmail task reply-and-send --body <body> [--thread-index <n>] [--no-send]",
+    "  surfagent-gmail task check-mailbox --mailbox <inbox|spam|sent|drafts|outbox> [--limit <n>]",
   ].join("\n");
 }
 
@@ -398,6 +489,22 @@ export async function runTaskCli(argv: string[]): Promise<number> {
       body,
       ...(threadIndex !== undefined ? { threadIndex } : {}),
       send: parsed.flags["no-send"] === true ? false : true,
+    });
+    console.log(JSON.stringify(run, null, 2));
+    return 0;
+  }
+
+  if (task === "check-mailbox") {
+    const mailbox = String(parsed.flags.mailbox ?? "").trim().toLowerCase() as CheckMailboxOptions["mailbox"];
+    const rawLimit = parsed.flags.limit;
+    const limit = rawLimit === undefined || rawLimit === true ? undefined : Number(rawLimit);
+    if (!mailbox || !["inbox", "spam", "sent", "drafts", "outbox"].includes(mailbox) || (limit !== undefined && Number.isNaN(limit))) {
+      console.error(usage());
+      return 1;
+    }
+    const run = await runCheckMailboxTask({
+      mailbox,
+      ...(limit !== undefined ? { limit } : {}),
     });
     console.log(JSON.stringify(run, null, 2));
     return 0;

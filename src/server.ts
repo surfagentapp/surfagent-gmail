@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { daemonHealth } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
-import { runComposeAndSendTask, runReplyAndSendTask } from "./task-runner.js";
+import { runCheckMailboxTask, runComposeAndSendTask, runReplyAndSendTask } from "./task-runner.js";
 import type { ToolDefinition } from "./types.js";
 import { asObject, asOptionalNumber, asOptionalString, errorResult, textResult } from "./types.js";
 
@@ -164,6 +164,24 @@ export const TOOL_SET: ToolDefinition[] = [
       const input = asObject(args, "gmail_reply_and_send_task arguments");
       const body = String(input.body ?? "").trim();
       return textResult(JSON.stringify(await runReplyAndSendTask({ body, ...(typeof input.threadIndex === "number" ? { threadIndex: input.threadIndex } : {}), send: input.send === false ? false : true }), null, 2));
+    },
+  },
+  {
+    name: "gmail_check_mailbox_task",
+    description: "Run a deterministic Gmail mailbox check for inbox, spam, sent, drafts, or outbox-style sent view with screenshots and visible-thread extraction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailbox: { type: "string", enum: ["inbox", "spam", "sent", "drafts", "outbox"] },
+        limit: { type: "number", description: "Visible thread rows to extract. Defaults to 10." },
+      },
+      required: ["mailbox"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "gmail_check_mailbox_task arguments");
+      const mailbox = String(input.mailbox ?? "").trim().toLowerCase() as "inbox" | "spam" | "sent" | "drafts" | "outbox";
+      return textResult(JSON.stringify(await runCheckMailboxTask({ mailbox, ...(typeof input.limit === "number" ? { limit: input.limit } : {}) }), null, 2));
     },
   },
 ];

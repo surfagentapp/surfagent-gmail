@@ -247,7 +247,9 @@ export async function getOpenMessage(tabId?: string) {
 }
 
 export async function extractVisible(limit = 10, tabId?: string) {
+  const payload = JSON.stringify({ limit });
   const raw = await evaluate<string>(String.raw`(() => {
+    const input = ${payload};
     const diagnostics = {
       url: location.href,
       path: location.pathname + location.hash,
@@ -260,7 +262,7 @@ export async function extractVisible(limit = 10, tabId?: string) {
         text: (el.innerText || el.textContent || '').trim(),
       }))
       .filter((item) => item.text)
-      .slice(0, limit);
+      .slice(0, input.limit);
     return JSON.stringify({ ok: true, count: rows.length, items: rows, diagnostics });
   })();`, tabId);
   return parseJsonResult(raw);

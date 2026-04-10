@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 const DAEMON_URL = process.env.SURFAGENT_DAEMON_URL ?? "http://127.0.0.1:7201";
 const TOKEN_PATH = join(homedir(), ".surfagent", "daemon-token.txt");
 const SITE_URL_RE = new RegExp(String.raw`https?://mail\.google\.com/`, "i");
+const BASE_ORIGIN = 'https://mail.google.com';
 const BASE_URL = 'https://mail.google.com/mail/u/0/#inbox';
 
 let cachedToken: string | null | undefined;
@@ -100,8 +101,18 @@ export async function findSiteTab(): Promise<TabInfo | null> {
   return tabs.find((tab) => SITE_URL_RE.test(tab.url)) ?? null;
 }
 
+export async function findSiteTabByPath(pathFragment: string): Promise<TabInfo | null> {
+  const tabs = await listTabs();
+  const needle = pathFragment.toLowerCase();
+  return tabs.find((tab) => SITE_URL_RE.test(tab.url) && tab.url.toLowerCase().includes(needle)) ?? null;
+}
+
 export async function ensureSiteTab(path = '/mail/u/0/#inbox'): Promise<TabInfo> {
-  const targetUrl = /^https?:\/\//i.test(path) ? path : `${BASE_URL.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  const targetUrl = /^https?:\/\//i.test(path)
+    ? path
+    : path.startsWith("/")
+      ? `${BASE_ORIGIN}${path}`
+      : `${BASE_URL.replace(/\/$/, "")}/${path.replace(/^\/+/, "")}`;
   const existing = await findSiteTab();
   if (existing) {
     await navigateTab(targetUrl, existing.id);
