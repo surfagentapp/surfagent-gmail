@@ -33,6 +33,15 @@ It has:
 
 So this adapter gives site-native tools instead of making agents rediscover Gmail every run.
 
+## Default operating mode
+
+Gmail should be treated as a **state-first hybrid** surface.
+
+That means:
+- use task runners and Gmail-native state tools first
+- use visual proof for send/render confirmation, not as a replacement for stronger mailbox or composer state
+- avoid freestyle browser wandering for tasks that the adapter already knows how to do deterministically
+
 ## Current tool set
 
 - `gmail_health_check`
