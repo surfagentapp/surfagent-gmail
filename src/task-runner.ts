@@ -1,32 +1,14 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findSiteTabByPath, screenshot } from "./connection.js";
 import { extractVisible, fillComposeDraft, getComposerState, getOpenMessage, getSiteState, openCompose, openReply, openSent, openSite, openVisibleThreadRow, sendCurrentCompose } from "./site.js";
+import { createTaskRunnerRuntime, type ScreenshotArtifact, type TaskRunBase, type TaskStep } from "./task-runner-runtime.js";
 
 export type GmailTaskKind = "compose-and-send" | "reply-and-send" | "check-mailbox" | "open-latest-thread" | "triage-mailbox";
 
-type TaskStepStatus = "started" | "completed" | "failed";
-
-type TaskStep = {
-  name: string;
-  status: TaskStepStatus;
-  startedAt: string;
-  finishedAt?: string;
-  details?: unknown;
-};
-
-type ScreenshotArtifact = {
-  label: string;
-  path: string;
-  takenAt: string;
-};
-
-export type GmailTaskRun = {
-  ok: boolean;
+export type GmailTaskRun = TaskRunBase & {
   adapter: "gmail";
   task: GmailTaskKind;
-  runId: string;
   steps: TaskStep[];
   artifacts: ScreenshotArtifact[];
   outcome?: unknown;
@@ -64,63 +46,31 @@ export type TriageMailboxOptions = {
 
 const RUN_ROOT = process.env.SURFAGENT_RUN_DIR || join(tmpdir(), "surfagent-gmail-runs");
 
-function isoNow(): string {
-  return new Date().toISOString();
-}
+const runtime = createTaskRunnerRuntime({
+  rootDir: RUN_ROOT,
+  screenshot,
+});
 
 function slug(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'run';
 }
 
-function cleanBase64Image(input: string): string {
-  const value = input.trim();
-  const comma = value.indexOf(",");
-  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
-}
-
-async function ensureRunDir(runId: string): Promise<string> {
-  const dir = join(RUN_ROOT, runId);
-  await mkdir(dir, { recursive: true });
-  return dir;
-}
-
-async function writeRunFile(runId: string, filename: string, content: string | Buffer, encoding?: BufferEncoding): Promise<string> {
-  const dir = await ensureRunDir(runId);
-  const fullPath = join(dir, filename);
-  if (typeof content === "string") await writeFile(fullPath, content, encoding ?? "utf8");
-  else await writeFile(fullPath, content);
-  return fullPath;
+function makeRunId(task: string): string {
+  return runtime.makeRunId(task);
 }
 
 async function overwriteRunManifest(run: GmailTaskRun): Promise<string> {
-  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  return runtime.writeRunManifest(run);
 }
 
-async function captureRunScreenshot(run: GmailTaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact> {
-  const image = await screenshot(tabId);
-  const payload = cleanBase64Image(image);
-  const path = await writeRunFile(run.runId, `${String(run.artifacts.length + 1).padStart(2, "0")}-${slug(label)}.png`, Buffer.from(payload, "base64"));
-  const artifact = { label, path, takenAt: isoNow() };
-  run.artifacts.push(artifact);
-  await overwriteRunManifest(run);
-  return artifact;
+async function captureRunScreenshot(run: GmailTaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact | null> {
+  return runtime.captureScreenshot(run, tabId, label);
 }
 
 async function withStep<T>(run: GmailTaskRun, name: string, fn: () => Promise<T>): Promise<T> {
-  const step: TaskStep = { name, status: "started", startedAt: isoNow() };
-  run.steps.push(step);
-  await overwriteRunManifest(run);
   try {
-    const result = await fn();
-    step.status = "completed";
-    step.finishedAt = isoNow();
-    step.details = result;
-    await overwriteRunManifest(run);
-    return result;
+    return await runtime.withStep(run, name, fn);
   } catch (error) {
-    step.status = "failed";
-    step.finishedAt = isoNow();
-    step.details = error instanceof Error ? error.message : String(error);
     run.ok = false;
     run.error = {
       code: inferErrorCode(error),
@@ -280,7 +230,7 @@ export async function runCheckMailboxTask(options: CheckMailboxOptions): Promise
     ok: true,
     adapter: "gmail",
     task: "check-mailbox",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-check-mailbox`,
+    runId: makeRunId(`${mailbox}-check-mailbox`),
     steps: [],
     artifacts: [],
   };
@@ -335,7 +285,7 @@ export async function runTriageMailboxTask(options: TriageMailboxOptions): Promi
     ok: true,
     adapter: "gmail",
     task: "triage-mailbox",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-triage-mailbox`,
+    runId: makeRunId(`${mailbox}-triage-mailbox`),
     steps: [],
     artifacts: [],
   };
@@ -408,7 +358,7 @@ export async function runOpenLatestThreadTask(options: OpenLatestThreadOptions):
     ok: true,
     adapter: "gmail",
     task: "open-latest-thread",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${mailbox}-open-latest-thread`,
+    runId: makeRunId(`${mailbox}-open-latest-thread`),
     steps: [],
     artifacts: [],
   };
@@ -463,7 +413,7 @@ export async function runComposeAndSendTask(options: ComposeAndSendOptions): Pro
     ok: true,
     adapter: "gmail",
     task: "compose-and-send",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.subject)}-compose-and-send`,
+    runId: makeRunId(`${slug(options.subject)}-compose-and-send`),
     steps: [],
     artifacts: [],
   };
@@ -571,7 +521,7 @@ export async function runReplyAndSendTask(options: ReplyAndSendOptions): Promise
     ok: true,
     adapter: "gmail",
     task: "reply-and-send",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-reply-and-send`,
+    runId: makeRunId('reply-and-send'),
     steps: [],
     artifacts: [],
   };
